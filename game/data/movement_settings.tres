@@ -1,0 +1,46 @@
+[gd_resource type="Resource" script_class="MovementSettings" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/movement_settings.gd" id="1_settings"]
+
+[resource]
+script = ExtResource("1_settings")
+tile_size = 32.0
+initial_mass = 28.0
+base_thrust = 240.0
+drag_coefficient = 0.15
+passive_brake_ratio = 0.9
+emergency_brake_multiplier = 10.0
+base_energy_capacity = 150.0
+moving_energy_per_second = 2.0
+thrust_energy_per_second = 3.0
+autopilot_energy_per_second = 4.0
+emergency_stop_cost = 25.0
+hook_launch_cost = 8.0
+hook_miss_cost = 5.0
+loaded_hook_energy_per_second = 4.0
+loaded_hook_mass_energy_per_second = 0.15
+rice_energy = 15.0
+energy_crop_energy = 35.0
+god_zoom_default = 0.55
+god_zoom_min = 0.4
+god_zoom_max = 1.0
+focus_zoom_default = 1.4
+focus_zoom_min = 1.0
+focus_zoom_max = 2.0
+camera_look_ahead_seconds = 0.3
+camera_smooth_time = 0.15
+view_transition_time = 0.4
+focus_pan_limit = 176.0
+edge_pan_speed = 150.0
+soft_boundary_tiles = 75.0
+soft_boundary_speed_ratio = 0.5
+autopilot_cruise_ratio = 0.6
+autopilot_min_energy = 20.0
+warning_radius_tiles = 4.0
+autopilot_arrival_radius = 12.0
+hook_range_tiles = 10.0
+hook_extend_speed = 525.0
+hook_empty_retract_speed = 640.0
+hook_loaded_retract_ratio = 0.5
+hook_dangle_time = 0.6
+hook_miss_retract_time = 0.5

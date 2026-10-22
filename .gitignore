@@ -1,0 +1,7 @@
+**/.godot/
+.codex_tmp/
+artifacts/
+asset-library/
+docs/
+tools/
+
