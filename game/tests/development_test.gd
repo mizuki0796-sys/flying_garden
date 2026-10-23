@@ -20,8 +20,8 @@ func _run() -> void:
 	game.set_process(false)
 	game._start_demo()
 	var dev = game.development
-	check(is_equal_approx(game._engine_thrust(), 240.0), "starting engine retains baseline thrust")
-	check(not dev.research("automatic"), "automatic refuel requires efficiency research")
+	check(is_equal_approx(game._engine_thrust(), 0.0) and not dev.has_facility("power") and not dev.has_facility("grapple"), "the island starts grounded without an engine or grapple")
+	check(not dev.research("automatic"), "energy automation requires crop-energy research")
 	check(not dev.gather(Vector2i(2, -2)), "mining requires island development research")
 	var initial_seeds: int = game.seeds
 	check(dev.gather(Vector2i(-2, -2)) and game.seeds > initial_seeds, "forest supplies extra seeds and wood")
@@ -38,7 +38,8 @@ func _run() -> void:
 	before = game.coins
 	check(dev.build(Vector2i(0, -2), "power"), "engine occupies one available tile")
 	check(game.coins == before - 40 and dev.materials.wood == wood_before - 6, "building consumes specified resources")
-	check(game._engine_thrust() > thrust_before * 1.9, "multiple engines add thrust")
+	check(game._engine_thrust() > thrust_before, "first researched engine activates propulsion")
+	check(not dev.build(Vector2i(1, -2), "power"), "engine count cannot exceed the current technology level")
 	thrust_before = game._engine_thrust()
 	check(dev.upgrade(Vector2i(0, -2)) and game._engine_thrust() > thrust_before, "building upgrade improves power")
 	before = game.coins
@@ -49,12 +50,13 @@ func _run() -> void:
 	check(dev.build(Vector2i(1, 2), "water") and game.energy_capacity > capacity_before, "storage construction increases energy capacity")
 	capacity_before = game.energy_capacity
 	check(dev.upgrade(Vector2i(1, 2)) and game.energy_capacity > capacity_before, "storage upgrade increases capacity")
+	var range_before: float = game.hook_max_distance
+	check(dev.research("hook") and dev.build(Vector2i(2, 0), "grapple") and game.hook_max_distance > range_before, "hook research unlocks the unique grapple hut")
+	check(not dev.build(Vector2i(1, -2), "grapple"), "only one grapple hut can exist")
 	var origin_before: Vector2 = game._hook_origin()
 	dev.tile_at(Vector2i(2, 0)).hp = 55.0
 	check(dev.relocate(Vector2i(2, 0), Vector2i(-2, 0)), "grapple hut relocates")
 	check(game._hook_origin() != origin_before and dev.tile_at(Vector2i(-2, 0)).hp == 55.0, "launch origin and damage follow moved hut")
-	var range_before: float = game.hook_max_distance
-	check(dev.research("hook") and game.hook_max_distance > range_before, "hook range technology applies immediately")
 	check(dev.upgrade(Vector2i(-2, 0)), "grapple building can upgrade after research")
 	check(dev.research("development") and dev.gather(Vector2i(2, -2)), "development unlocks mineral extraction")
 	check(dev.research("development"), "advanced development unlocks lava")
@@ -65,20 +67,21 @@ func _run() -> void:
 	check(dev.gather(Vector2i(2, 1)) and dev.materials.ore > harvested_ore, "lava has collectible material yields")
 	check(dev.research("efficiency"), "energy efficiency research completes")
 	check(is_equal_approx(dev.efficiency(), 0.85), "efficiency reduces mechanical costs by 15 percent")
-	check(dev.research("geothermal"), "geothermal has satisfied development and efficiency prerequisites")
+	check(dev.research("bioenergy") and dev.research("automatic"), "crop energy unlocks energy automation")
+	check(dev.build(Vector2i(1, -2), "energy"), "energy factory must be constructed before conversion")
+	check(dev.research("geothermal"), "geothermal has satisfied development and factory prerequisites")
 	game.energy = 0.0
 	var magma_before: int = dev.materials.magma
 	game._refuel_from_crops()
 	check(game.energy == 60.0 and dev.materials.magma == magma_before - 1, "magma is consumed as high-value fuel")
-	check(dev.research("automatic"), "automatic refuel unlocks")
 	dev.materials.magma = 0
 	game.energy_crop_stock = 1
 	game.energy = 0.0
-	dev.update()
-	check(game.energy == 35.0 and game.energy_crop_stock == 0, "automatic fill consumes a stock item")
+	dev.update(12.1)
+	check(game.energy == 20.0 and game.energy_crop_stock == 0, "energy factory periodically consumes a stock item at the researched rate")
 	dev.auto_fuel = false
 	game.energy = 0.0
-	dev.update()
+	dev.update(12.1)
 	check(game.energy == 0.0, "automatic fill toggle is respected")
 	game.notice_label.text = "保留现有通知"
 	game.hook_state = game.HOOK_READY
@@ -88,6 +91,7 @@ func _run() -> void:
 	check("!" in game.energy_label.text, "low energy is visible locally in the HUD")
 	var plot_count: int = game.plots.size()
 	check(dev.build(Vector2i(2, -2), "farm") and game.plots.size() == plot_count + 1, "reclaimed mineral tile becomes a dynamic farm")
+	check(dev.research("agriculture") and dev.research("agriculture") and dev.research("agri_automation"), "expensive farm branch unlocks batch work")
 	game.seeds = 2
 	check(dev.batch(false) == 2 and game.seeds == 0, "batch planting stops at inventory limit")
 	for plot in game.plots:
@@ -97,6 +101,28 @@ func _run() -> void:
 	check(dev.batch(true) == 2 and game.seeds == 2, "batch harvest collects each mature plot once")
 	before = game.coins
 	check(dev.batch(true) == 0 and game.coins == before, "repeated batch harvest does not duplicate rewards")
+	var mass_before: float = game.island_mass
+	game.seeds = 10
+	check(dev.research("forestry") and dev.build(Vector2i(2, 1), "tree"), "forestry plants trees on empty grass")
+	check(game.island_mass > mass_before, "planted tree mass is included in navigation physics")
+	var base_cyclone_growth := 0.15
+	check(dev.research("forecast") and dev.weather_growth("cyclone", base_cyclone_growth) > base_cyclone_growth and dev.weather_growth("cyclone", base_cyclone_growth) < 1.0, "forecasting mitigates but never removes disastrous weather")
+	var radar_before: float = dev.radar_range()
+	check(dev.research("radar") and dev.radar_range() > radar_before, "radar research expands map detection range")
+	var hook_efficiency_before: float = dev.hook_efficiency()
+	check(not dev.research("docking") and dev.research("hook") and dev.hook_efficiency() < hook_efficiency_before and dev.research("docking"), "grapple II lowers winch energy and unlocks large-island docking")
+	var locked_target := {"island": {"size_class": 2, "shop": false}}
+	check("II" in game._target_lock_reason(locked_target), "super islands require docking II")
+	check(dev.open_trade("漂流商店岛"), "docking I allows a shop-island trade session")
+	before = game.coins
+	var food_before: int = game.rice_stock
+	dev.trade_buy(12, {"food": 4}, "测试补给")
+	check(game.coins == before - 12 and game.rice_stock == food_before + 4, "merchant trade relieves resource pressure with an explicit exchange")
+	before = game.coins
+	var ore_before_trade: int = dev.materials.ore
+	dev.trade_buy(35, {"ore": 1}, "应急矿物")
+	check(game.coins == before - 35 and dev.materials.ore == ore_before_trade + 1, "early merchant ore remains available only at a steep 35-to-1 price")
+	dev.trade_open = false
 	var starter: Dictionary = {}
 	for target in game.targets:
 		check(target.has("island"), "world has no independent floating loot")
@@ -120,6 +146,17 @@ func _run() -> void:
 	engine.hp = 30.0
 	check(not dev.repair(power_cell) and engine.hp == 30.0, "unaffordable repair cannot restore durability")
 	game.coins = 5000
+	var farm_cell := Vector2i.ZERO
+	var farm_index: int = dev.plot_at(farm_cell)
+	game.plots[farm_index].state = 1
+	game.plots[farm_index].progress = 0.5
+	check(dev.damage_cell(farm_cell, 20.0, "测试灾害") and int(game.plots[farm_index].state) == 0, "farm damage destroys the crop immediately")
+	var seeds_before: int = game.seeds
+	game._interact_with_plot(game._plot_rect(farm_index).get_center())
+	check(game.seeds == seeds_before and int(game.plots[farm_index].state) == 0, "damaged farms reject planting until repaired")
+	check(dev.repair(farm_cell), "damaged farm can be repaired")
+	var tiles_before_collision: int = game.island_tiles.size()
+	check(dev.collision_at(game.island_pos + Vector2(-2, 2) * game.IslandTiles.CELL_SIZE, 80.0, 60.0) >= 1 and game.island_tiles.size() < tiles_before_collision, "collision destroys impact tiles with mass-sensitive collapse")
 	check(not dev.trim(Vector2i(2, 2)), "island clipping requires research")
 	check(dev.research("terraform"), "island clipping research unlocks")
 	check(not dev.trim(Vector2i.ZERO) and not dev.trim(power_cell), "core and facilities are protected from clipping")
@@ -131,7 +168,9 @@ func _run() -> void:
 	check(not dev.can_trim(Vector2i(1, 0)) and dev.can_trim(Vector2i(2, 0)), "clipping keeps all remaining tiles connected")
 	# The actual menu can open and build all rows without deferred callback failures.
 	dev.toggle(true)
-	check(dev.modal.visible and dev.content.get_child_count() > 10, "technology tree UI renders all research branches")
+	var tech_body: HBoxContainer = dev.content.get_child(2)
+	var tech_graph: Control = tech_body.get_child(0)
+	check(dev.modal.visible and tech_graph.get_child_count() >= Rules.TECH_ORDER.size() * 2, "visual technology tree renders icon nodes and progress bars")
 	dev.toggle(false)
 	check(dev.modal.visible and not dev.tech_open, "development menu renders all actions")
 	dev.modal.hide()
@@ -159,7 +198,7 @@ func _test_weather() -> void:
 				var parent: Dictionary = ids[zone.parent_id]
 				check(parent.kind == "cloud" and zone.pos.distance_to(parent.pos) + zone.radius <= parent.radius, "rain/storm stays entirely inside its parent cloud")
 				check(zone.remaining <= parent.remaining and zone.velocity == parent.velocity, "precipitation cannot outlive or drift out of parent")
-	check(kinds.size() == 4, "sun, cloud, rain, and thunderstorm occur")
+	check(kinds.size() == 6, "sun, cloud, rain, thunderstorm, snow, and cyclone occur")
 	var first: Dictionary = Weather.regions(Vector2.ZERO, Vector2.ZERO, 0.0)[0]
 	var later: Array = Weather.regions(first.pos, Vector2.ZERO, float(first.remaining) + 0.1)
 	var old_survived := false

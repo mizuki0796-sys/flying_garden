@@ -5,10 +5,10 @@ extends RefCounted
 const CELL := 8000.0
 const RAIN_RADIUS := 2200.0
 const CLOUD_RADIUS := 4100.0
-const NAMES := {"sun": "晴天", "cloud": "阴天", "rain": "雨天", "storm": "雷暴"}
-const GROWTH := {"sun": 1.35, "cloud": 0.9, "rain": 2.0, "storm": 0.55}
-const PRIORITY := {"sun": 0, "cloud": 1, "rain": 2, "storm": 3}
-const EDGE := {"sun": Color("#f7c74a"), "cloud": Color("#8798af"), "rain": Color("#56a8dc"), "storm": Color("#8060a8")}
+const NAMES := {"sun": "晴天", "cloud": "阴天", "rain": "雨天", "storm": "雷暴", "snow": "雪天", "cyclone": "飓风"}
+const GROWTH := {"sun": 1.55, "cloud": 0.75, "rain": 2.30, "storm": 0.35, "snow": 0.50, "cyclone": 0.15}
+const PRIORITY := {"sun": 0, "cloud": 1, "rain": 2, "snow": 3, "storm": 4, "cyclone": 5}
+const EDGE := {"sun": Color("#f7c74a"), "cloud": Color("#8798af"), "rain": Color("#56a8dc"), "storm": Color("#8060a8"), "snow": Color("#d9eff7"), "cyclone": Color("#bd5968")}
 
 static func regions(position: Vector2, origin: Vector2, elapsed: float) -> Array:
 	var result: Array = []
@@ -32,7 +32,9 @@ static func regions(position: Vector2, origin: Vector2, elapsed: float) -> Array
 			var onset := rng.randf_range(15.0, 40.0)
 			var ending := duration - rng.randf_range(20.0, 40.0)
 			if cloudy and age >= onset and age < ending:
-				var child := region(id + ":rain", "storm" if rng.randf() < 0.4 else "rain", center + Vector2(650, -300), RAIN_RADIUS, velocity, ending - age)
+				var event_roll := rng.randf()
+				var child_kind := "cyclone" if event_roll < 0.14 else ("storm" if event_roll < 0.34 else ("snow" if event_roll < 0.52 else "rain"))
+				var child := region(id + ":" + child_kind, child_kind, center + Vector2(650, -300), RAIN_RADIUS, velocity, ending - age)
 				child.parent_id = id
 				result.append(child)
 	return result
@@ -40,4 +42,4 @@ static func regions(position: Vector2, origin: Vector2, elapsed: float) -> Array
 static func region(id: String, kind: String, center: Vector2, radius: float, velocity: Vector2, remaining: float) -> Dictionary:
 	return {"id": id, "kind": kind, "name": NAMES[kind], "pos": center, "radius": radius,
 		"velocity": velocity, "remaining": remaining, "priority": PRIORITY[kind], "growth": GROWTH[kind],
-		"edge": EDGE[kind], "color": Color(EDGE[kind], 0.035), "icon": 5 if kind == "sun" else (6 if kind == "rain" else 7)}
+		"edge": EDGE[kind], "color": Color(EDGE[kind], 0.035), "icon": 5 if kind == "sun" else (6 if kind in ["rain", "snow"] else 7)}

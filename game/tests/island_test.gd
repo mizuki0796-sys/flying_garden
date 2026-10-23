@@ -15,8 +15,8 @@ func _run() -> void:
 	game.set_physics_process(false)
 	game.set_process(false)
 	game._start_demo()
-	_expect(game.island_tiles.size() == 25 and is_equal_approx(game.island_mass, 28.0), "25 independent starting tiles determine the starting mass")
-	var initial_tiles: Array = game.island_tiles.duplicate(true)
+	_expect(game.island_tiles.size() == 25 and is_equal_approx(game.island_mass, game.IslandTiles.mass(game.island_tiles)), "25 independent starting tiles determine the starting mass")
+	var initial_tiles: Array = []
 	var nearby_islands := 0
 	var view := Rect2(game.island_pos - Vector2(1050, 590), Vector2(2100, 1180))
 	for target in game.targets:
@@ -25,7 +25,7 @@ func _run() -> void:
 		if view.has_point(terrain.pos):
 			nearby_islands += 1
 		_expect(game._hazard_clearance(terrain) > 0.0, "spawn does not intersect terrain")
-	_expect(nearby_islands >= 4, "ordinary flight view contains dense resource islands")
+	_expect(nearby_islands >= 1 and nearby_islands <= 6, "ordinary flight view uses the lower resource-island density")
 	print("Initial neighborhood: %d resource islands" % nearby_islands)
 
 	var starter: Dictionary = {}
@@ -34,6 +34,11 @@ func _run() -> void:
 			starter = target
 	_expect(not starter.is_empty(), "a reachable starter island exists")
 	if not starter.is_empty():
+		game.coins = 500
+		game.development.materials = {"wood": 100, "stone": 100, "ore": 100, "magma": 0}
+		_expect(game.development.research("engine") and game.development.build(Vector2i(0, -2), "power"), "propulsion is built before departure")
+		_expect(game.development.research("hook") and game.development.build(Vector2i(2, 0), "grapple"), "grapple is built before capturing an island")
+		initial_tiles = game.island_tiles.duplicate(true)
 		var initial_count: int = game.island_tiles.size()
 		var initial_mass: float = game.island_mass
 		var added_count: int = starter.island.tiles.size()
@@ -85,7 +90,7 @@ func _run() -> void:
 		for target in game.targets:
 			if target.has("island") and far_view.has_point(target.pos):
 				far_islands += 1
-		_expect(far_islands >= 4, "faraway regions retain resource island density")
+		_expect(far_islands >= 1 and far_islands <= 6, "faraway regions retain the lower resource island density")
 		game.island_pos = game.world_origin
 		game._update_world_stream()
 		_expect(not bool(starter.active) and not bool(starter.island.active), "returning to a sector does not respawn merged islands")

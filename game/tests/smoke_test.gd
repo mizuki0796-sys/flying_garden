@@ -21,8 +21,23 @@ func _run() -> void:
 	_expect(is_equal_approx(game.energy_capacity, 150.0), "base energy capacity follows movement design")
 	_expect(game.plots.size() == 9, "3x3 farm grid is initialized")
 	_expect(int(game.plots[0].crop_type) != int(game.plots[1].crop_type), "rice and tomato plots alternate")
+	_expect(game._engine_thrust() == 0.0 and not game.development.has_facility("grapple"), "opening phase starts without propulsion or grapple")
 	_expect(game.targets.size() >= 3, "hook targets are initialized")
 	game._start_demo()
+
+	# Collision warnings only appear while the island is actually closing on a hazard.
+	var warning_hazard := {"active": true, "tethered": false, "pos": game.island_pos + Vector2(240, 0), "radius": 30.0}
+	game.hazards = [warning_hazard]
+	game.island_velocity = Vector2.LEFT * 80.0
+	game._update_warning()
+	_expect(is_inf(game.warning_distance), "receding hazards do not trigger collision warnings")
+	game.island_velocity = Vector2.RIGHT * 80.0
+	game._update_warning()
+	_expect(not is_inf(game.warning_distance), "an actual closing trajectory triggers a collision warning")
+	game.island_velocity = Vector2.ZERO
+	game._update_warning()
+	_expect(is_inf(game.warning_distance), "stationary islands do not show collision warnings")
+	game.hazards = []
 
 	# Plant, mature, and harvest one crop.
 	var initial_seeds: int = game.seeds
@@ -42,8 +57,18 @@ func _run() -> void:
 	var coins_before_harvest: int = game.coins
 	game._interact_with_plot(plot_center)
 	_expect(game.harvested == 1, "mature crop can be harvested")
-	_expect(game.coins == coins_before_harvest + 18, "harvest pays the configured coin reward")
+	_expect(game.coins == coins_before_harvest + game.Development.Rules.HARVEST_COINS, "harvest pays the configured coin reward")
 	_expect(game.rice_stock == 1, "harvest stores a crop that can be converted to energy")
+	_expect(game.Development.Rules.HARVEST_COINS == 2, "each plant only grants a small direct coin reward")
+	game._select_crop_tool(game.CROP_TOMATO)
+	game._interact_with_plot(game._plot_rect(2).get_center())
+	_expect(int(game.plots[2].state) == 1 and int(game.plots[2].crop_type) == game.CROP_TOMATO, "crop buttons directly choose what an empty field plants")
+
+	# Research and construction turn the grounded garden into a travelling island.
+	game.coins = 500
+	game.development.materials = {"wood": 100, "stone": 100, "ore": 100, "magma": 2}
+	_expect(game.development.research("engine") and game.development.build(Vector2i(0, -2), "power"), "engine research and construction unlock propulsion")
+	_expect(game.development.research("hook") and game.development.build(Vector2i(2, 0), "grapple"), "hook research and construction unlock island capture")
 
 	# Only islands are hookable now; use the real reachable starter island.
 	game._select_tool(game.TOOL_HOOK)
@@ -70,14 +95,15 @@ func _run() -> void:
 	_expect(game.island_pos.x > position_before.x, "movement input moves the floating island")
 	_expect(game.energy < energy_before, "movement consumes energy")
 
-	# Energy never regenerates by itself, while harvested crops can restore it.
+	# Energy never regenerates by itself; crops require the researched factory.
 	game.island_velocity = Vector2.ZERO
 	game.energy = 100.0
 	game._physics_process(1.0)
 	_expect(is_equal_approx(game.energy, 100.0), "idle island does not regenerate energy")
 	game.energy = 0.0
+	_expect(game.development.research("bioenergy") and game.development.research("automatic") and game.development.build(Vector2i(1, -2), "energy"), "crop conversion requires an energy factory")
 	game._refuel_from_crops()
-	_expect(is_equal_approx(game.energy, 15.0), "rice converts to the configured 15 energy")
+	_expect(is_equal_approx(game.energy, 8.0), "level-one crop energy converts rice at the researched rate")
 
 	# The same thrust produces less acceleration at higher mass.
 	game.energy = 150.0
@@ -101,7 +127,7 @@ func _run() -> void:
 	while game.island_velocity.length() < game._max_speed() * 0.8 and acceleration_time < 15.0:
 		game._apply_movement(0.05, Vector2.RIGHT, true)
 		acceleration_time += 0.05
-	_expect(acceleration_time >= 7.0 and acceleration_time <= 12.0, "initial island reaches 80 percent max speed in 7-12 seconds")
+	_expect(acceleration_time >= 7.0 and acceleration_time <= 12.0, "first engine reaches cruise speed gradually")
 	game.energy = 150.0
 	game.island_velocity = Vector2.RIGHT * game._max_speed()
 	var braking_time := 0.0
