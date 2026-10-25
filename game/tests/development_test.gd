@@ -23,8 +23,9 @@ func _run() -> void:
 	check(is_equal_approx(game._engine_thrust(), 0.0) and not dev.has_facility("power") and not dev.has_facility("grapple"), "the island starts grounded without an engine or grapple")
 	check(not dev.research("automatic"), "energy automation requires crop-energy research")
 	check(not dev.gather(Vector2i(2, -2)), "mining requires island development research")
-	var initial_seeds: int = game.seeds
-	check(dev.gather(Vector2i(-2, -2)) and game.seeds > initial_seeds, "forest supplies extra seeds and wood")
+	var initial_rice_seeds: int = game.rice_seeds
+	var initial_tomato_seeds: int = game.tomato_seeds
+	check(dev.gather(Vector2i(-2, -2)) and game.rice_seeds == initial_rice_seeds + 1 and game.tomato_seeds == initial_tomato_seeds + 1, "forest supplies separately counted rice and tomato seeds")
 	var resources_before: Dictionary = dev.materials.duplicate()
 	check(not dev.gather(Vector2i(-2, -2)) and dev.materials == resources_before, "depleted terrain cannot be repeatedly harvested")
 	var before: int = game.coins
@@ -72,14 +73,16 @@ func _run() -> void:
 	check(dev.research("geothermal"), "geothermal has satisfied development and factory prerequisites")
 	game.energy = 0.0
 	var magma_before: int = dev.materials.magma
+	dev.select_fuel("magma")
 	game._refuel_from_crops()
 	check(game.energy == 60.0 and dev.materials.magma == magma_before - 1, "magma is consumed as high-value fuel")
 	dev.materials.magma = 0
 	game.energy_crop_stock = 1
 	game.energy = 0.0
+	dev.select_fuel("tomato")
 	dev.update(12.1)
 	check(game.energy == 20.0 and game.energy_crop_stock == 0, "energy factory periodically consumes a stock item at the researched rate")
-	dev.auto_fuel = false
+	dev.select_fuel("")
 	game.energy = 0.0
 	dev.update(12.1)
 	check(game.energy == 0.0, "automatic fill toggle is respected")
@@ -91,19 +94,22 @@ func _run() -> void:
 	check("!" in game.energy_label.text, "low energy is visible locally in the HUD")
 	var plot_count: int = game.plots.size()
 	check(dev.build(Vector2i(2, -2), "farm") and game.plots.size() == plot_count + 1, "reclaimed mineral tile becomes a dynamic farm")
-	check(dev.research("agriculture") and dev.research("agriculture") and dev.research("agri_automation"), "expensive farm branch unlocks batch work")
-	game.seeds = 2
-	check(dev.batch(false) == 2 and game.seeds == 0, "batch planting stops at inventory limit")
-	for plot in game.plots:
-		if plot.state == 1:
-			plot.state = 2
-			plot.progress = 1.0
-	check(dev.batch(true) == 2 and game.seeds == 2, "batch harvest collects each mature plot once")
+	check(dev.research("agri_automation"), "farm automation unlocks local management huts")
+	game.rice_seeds = 2
+	game.tomato_seeds = 7
+	check(dev.manage_farms() == 0, "research alone cannot manage farms")
+	check(dev.build(Vector2i(-2, -2), "farm_hut"), "management requires constructing a hut")
+	check(dev.manage_farms() == 1 and game.rice_seeds == 1 and game.tomato_seeds == 7, "hut plants only the nearby field using its own seed type")
+	var managed_index: int = dev.plot_at(Vector2i(-1, -1))
+	game.plots[managed_index].state = 2
 	before = game.coins
-	check(dev.batch(true) == 0 and game.coins == before, "repeated batch harvest does not duplicate rewards")
+	check(dev.manage_farms() == 2 and game.coins == before + Rules.HARVEST_COINS, "hut harvests and replants the nearby field")
+	before = game.coins
+	check(dev.manage_farms() == 0 and game.coins == before, "growing fields cannot yield duplicate rewards")
+	game.rice_seeds = 2
 	var mass_before: float = game.island_mass
-	game.seeds = 10
 	check(dev.research("forestry") and dev.build(Vector2i(2, 1), "tree"), "forestry plants trees on empty grass")
+	check(game.rice_seeds == 2 and game.tomato_seeds == 7, "tree cuttings do not consume crop seeds")
 	check(game.island_mass > mass_before, "planted tree mass is included in navigation physics")
 	var base_cyclone_growth := 0.15
 	check(dev.research("forecast") and dev.weather_growth("cyclone", base_cyclone_growth) > base_cyclone_growth and dev.weather_growth("cyclone", base_cyclone_growth) < 1.0, "forecasting mitigates but never removes disastrous weather")
@@ -151,9 +157,9 @@ func _run() -> void:
 	game.plots[farm_index].state = 1
 	game.plots[farm_index].progress = 0.5
 	check(dev.damage_cell(farm_cell, 20.0, "测试灾害") and int(game.plots[farm_index].state) == 0, "farm damage destroys the crop immediately")
-	var seeds_before: int = game.seeds
+	var seeds_before: int = game.rice_seeds
 	game._interact_with_plot(game._plot_rect(farm_index).get_center())
-	check(game.seeds == seeds_before and int(game.plots[farm_index].state) == 0, "damaged farms reject planting until repaired")
+	check(game.rice_seeds == seeds_before and int(game.plots[farm_index].state) == 0, "damaged farms reject planting until repaired")
 	check(dev.repair(farm_cell), "damaged farm can be repaired")
 	var tiles_before_collision: int = game.island_tiles.size()
 	check(dev.collision_at(game.island_pos + Vector2(-2, 2) * game.IslandTiles.CELL_SIZE, 80.0, 60.0) >= 1 and game.island_tiles.size() < tiles_before_collision, "collision destroys impact tiles with mass-sensitive collapse")

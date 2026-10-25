@@ -74,12 +74,16 @@ var inertia_damping_level := 0
 var energy_capacity := 150.0
 var energy := 150.0
 var coins := 78
-var seeds := 5
+var rice_seeds := 3
+var tomato_seeds := 2
 var rice_stock := 0
 var energy_crop_stock := 0
 var harvested := 0
 var gathered := 0
 var day_minutes := 8.0 * 60.0
+var day_number := 1
+var animation_time := 0.0
+var wind_strength := 0.12
 var demo_started := false
 var selected_tool := TOOL_HOOK
 var current_weather := -1
@@ -133,25 +137,31 @@ var world_sectors: Dictionary = {}
 var active_sector := Vector2i(2147483647, 2147483647)
 
 var icon_atlas: Texture2D
+var hud_icon_atlas: Texture2D
+const HUD_ICONS := ["land", "mass", "house", "wood", "stone", "ore", "magma", "tomato", "focus", "map", "build", "tech", "help", "cloud", "snow", "cyclone", "growth", "damage", "shield", "time", "rice_seeds", "tomato_seeds"]
+var resource_labels: Dictionary = {}
+var weather_icon: TextureRect
+var weather_timer: Label
+var weather_risk: Label
+var weather_risk_icon: TextureRect
+var navigation_buttons: HBoxContainer
 var rice_atlas: Texture2D
 var tomato_atlas: Texture2D
 var terrain_textures: Dictionary = {}
 var tree_texture: Texture2D
-var steward_texture: Texture2D
 var power_hut_texture: Texture2D
 var grapple_hut_texture: Texture2D
 var water_grain_hut_texture: Texture2D
 var money_label: Label
 var energy_label: Label
 var fuel_label: Label
-var seed_label: Label
 var time_label: Label
 var weather_label: Label
 var context_label: Label
 var context_title_label: Label
 var notice_label: Label
-var navigation_label: Label
-var navigation_panel: PanelContainer
+var header_row: HBoxContainer
+var stats_row: HBoxContainer
 var context_panel: PanelContainer
 var map_clip: Control
 var map_ink: Node2D
@@ -161,10 +171,11 @@ var fuel_button: Button
 var hook_button: Button
 var seed_button: Button
 var tomato_button: Button
+var gather_button: Button
+var tool_sidebar: PanelContainer
 var intro_panel: PanelContainer
 var guide_panel: PanelContainer
 var guide_body: Label
-var guide_expanded := false
 var notice_time := 0.0
 var hovered_plot := -1
 var selected_plot := -1
@@ -180,6 +191,7 @@ func _ready() -> void:
 	camera_zoom = movement_settings.god_zoom_default
 	camera_zoom_target = camera_zoom
 	icon_atlas = load("res://assets/ui/farm_ui_icons.png")
+	hud_icon_atlas = load("res://assets/ui/hud_icons.svg")
 	_load_pixel_v2_assets()
 	_initialize_world()
 	development = Development.new(self)
@@ -207,9 +219,7 @@ func _atlas_region(texture: Texture2D, region: Rect2) -> AtlasTexture:
 func _load_pixel_v2_assets() -> void:
 	terrain_textures = PixelTerrain.load_sources().duplicate()
 	terrain_textures["tree"] = terrain_textures["grass"]
-	var scale_reference: Texture2D = load("res://assets/pixel_v2/characters/world_scale_reference_v1.png")
 	tree_texture = PixelTerrain.approved_tree()
-	steward_texture = _atlas_region(scale_reference, Rect2(1046, 414, 232, 297))
 	rice_atlas = load("res://assets/pixel_v2/crops/rice_growth_5stage_v2.png")
 	tomato_atlas = load("res://assets/pixel_v2/crops/tomato_growth_5stage_v2.png")
 	power_hut_texture = _atlas_region(load("res://assets/pixel_v2/facilities/engine_room_v2.png"), Rect2(295, 91, 958, 845))
@@ -270,18 +280,52 @@ func _refresh_island_shape() -> void:
 
 
 func _clamp_focus_offset() -> void:
-	var bounds := island_bounds.grow(float(movement_settings.tile_size) * 0.5)
+	var bounds := island_bounds
 	focus_offset = focus_offset.clamp(bounds.position, bounds.end)
+	# Keep the focal point on actual land even for a concave or expanded island.
+	var nearest := focus_offset
+	var distance := INF
+	for tile in island_tiles:
+		var rect := IslandTiles.cell_rect(Vector2.ZERO, tile.cell).grow(-0.01)
+		var point := focus_offset.clamp(rect.position, rect.end)
+		var candidate := point.distance_squared_to(focus_offset)
+		if candidate < distance:
+			nearest = point
+			distance = candidate
+	focus_offset = nearest
+
+
+func _island_visual_bounds() -> Rect2:
+	# Include tall trees, roofs and the exposed soil beneath the tile footprint.
+	return Rect2(island_bounds.position - Vector2(38, 112), island_bounds.size + Vector2(76, 160))
+
+
+func _god_zoom_limit() -> float:
+	var visual := _island_visual_bounds()
+	return minf(movement_settings.god_zoom_max, minf(880.0 / visual.size.x, 440.0 / visual.size.y))
+
+
+func _clamp_god_camera() -> void:
+	var visual := _island_visual_bounds()
+	# Reserve space for the HUD, tools and visitor banner.
+	var safe := Rect2(156, 100, 968, 448)
+	var lower := island_pos + visual.end - (safe.end - VIEW_CENTER) / camera_zoom
+	var upper := island_pos + visual.position - (safe.position - VIEW_CENTER) / camera_zoom
+	camera_world = camera_world.clamp(lower, upper)
 
 
 func _physics_process(delta: float) -> void:
 	if not demo_started:
 		return
-	if development.modal != null and development.modal.visible:
+	# The visitor's departure clock also runs while browsing the market.
+	_update_merchant(delta)
+	if development.modal != null and (development.modal.visible or development.tile_menu.is_open()):
 		_update_hud()
 		return
 
-	day_minutes = fmod(day_minutes + delta * 5.0, 1440.0)
+	day_minutes += delta * 5.0
+	day_number += int(day_minutes / 1440.0)
+	day_minutes = fmod(day_minutes, 1440.0)
 	energy_warning_left = maxf(0.0, energy_warning_left - delta)
 	development.update(delta)
 	collision_cooldown = maxf(0.0, collision_cooldown - delta)
@@ -307,12 +351,11 @@ func _physics_process(delta: float) -> void:
 	if autopilot_active:
 		drive_direction = _autopilot_direction()
 	_apply_movement(delta, drive_direction, drive_direction.length_squared() > 0.01)
-	_update_camera(delta)
 	_update_focus_pan(delta)
+	_update_camera(delta)
 
 	_update_zones(delta)
 	_update_weather_hazards(delta)
-	_update_merchant(delta)
 	_update_crops(delta)
 	_update_hook(delta)
 	_update_targets(delta)
@@ -323,6 +366,11 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	animation_time += delta
+	var kind := _weather_kind()
+	var target_wind: float = {"clear": 0.12, "sun": 0.10, "cloud": 0.20, "rain": 0.34, "snow": 0.25, "storm": 0.65, "cyclone": 1.6}[kind]
+	wind_strength = move_toward(wind_strength, target_wind, delta * 0.7)
+	queue_redraw()
 	if notice_time > 0.0:
 		notice_time -= delta
 		if notice_time <= 0.0 and notice_label != null:
@@ -335,7 +383,7 @@ func _process(delta: float) -> void:
 
 func _update_plot_hover() -> void:
 	var next_hover := -1
-	if not sky_map_open and (development == null or development.modal == null or not development.modal.visible):
+	if not sky_map_open and (development == null or development.modal == null or (not development.modal.visible and not development.tile_menu.is_open())):
 		var mouse := get_viewport().get_mouse_position()
 		for index in range(plots.size()):
 			if _plot_rect(index).has_point(mouse):
@@ -349,17 +397,24 @@ func _update_plot_hover() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not demo_started:
 		return
+	if development.tile_menu.is_open():
+		if event.is_action_pressed("ui_cancel") or (event is InputEventMouseButton and event.pressed and event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]):
+			development.tile_menu.close()
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventKey and event.pressed:
+			development.tile_menu.close()
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_B or event.keycode == KEY_T:
 			development.toggle(event.keycode == KEY_T)
 			get_viewport().set_input_as_handled()
 			return
-		if event.keycode == KEY_H or event.keycode == KEY_J:
-			development.batch(event.keycode == KEY_H)
+		if event.keycode == KEY_R:
+			development.toggle_energy()
 			get_viewport().set_input_as_handled()
 			return
 	if development.modal.visible:
-		if event.is_action_pressed("ui_cancel"): development.modal.hide()
+		if event.is_action_pressed("ui_cancel"): development.close_menu()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("toggle_view"):
@@ -370,7 +425,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_show_notice("天空地图：点击设置目的地，回车确认启航。" if sky_map_open else "已关闭天空地图。")
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("refuel"):
-		_refuel_from_crops()
+		development.toggle_energy()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("emergency_stop"):
 		_emergency_stop()
@@ -427,12 +482,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				_interact_with_plot(event.position)
 			get_viewport().set_input_as_handled()
 		elif event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
-			if selected_tool == 2:
+			if hook_state != HOOK_READY:
+				_cancel_hook()
+			elif selected_tool == 2 and development.action != "gather":
 				development.move_from = development.NONE
 				development.trim_pending = development.NONE
 				_select_tool(TOOL_HOOK)
-			else:
-				_cancel_hook()
+			elif not sky_map_open:
+				development.tile_menu.open_at(development.cell_at(_screen_to_world(event.position)))
 			get_viewport().set_input_as_handled()
 
 
@@ -615,7 +672,7 @@ func _update_warning() -> void:
 		return
 	for hazard_value in hazards:
 		var hazard: Dictionary = hazard_value
-		if not bool(hazard.active) or bool(hazard.tethered) or not _has_collision_trend(hazard):
+		if not bool(hazard.active) or bool(hazard.tethered) or not _radar_visible(hazard.pos) or not _has_collision_trend(hazard):
 			continue
 		var offset: Vector2 = hazard.pos - island_pos
 		var clearance := _hazard_clearance(hazard)
@@ -664,26 +721,8 @@ func _emergency_stop() -> void:
 
 
 func _refuel_from_crops(quiet := false) -> void:
-	if energy >= energy_capacity - 0.01:
-		return
-	if development == null or not development.has_facility("energy"):
-		if not quiet:
-			_warn_energy("需要研究能源自动化并建造能源工厂")
-		return
-	if int(development.tech.geothermal) > 0 and int(development.materials.magma) > 0:
-		development.materials.magma -= 1
-		_add_energy(60.0, "消耗岩浆晶")
-	elif int(development.tech.bioenergy) > 0 and energy_crop_stock > 0:
-		energy_crop_stock -= 1
-		_add_energy(development.crop_energy(CROP_TOMATO), "能源工厂处理能源作物")
-	elif int(development.tech.bioenergy) > 0 and rice_stock > 0:
-		rice_stock -= 1
-		_add_energy(development.crop_energy(CROP_RICE), "能源工厂处理粮食")
-	elif int(development.tech.mineral_energy) > 0 and int(development.materials.ore) > 0:
-		development.materials.ore -= 1
-		_add_energy(development.ore_energy(), "能源工厂处理矿物")
-	elif not quiet:
-		_warn_energy("缺少已解锁的燃料；检查作物能源或矿物能源科技")
+	if not development.process_fuel() and not quiet:
+		_warn_energy(development.fuel_status())
 
 
 func _warn_energy(reason: String) -> void:
@@ -698,7 +737,7 @@ func _toggle_view() -> void:
 		if not autopilot_active and island_velocity.length() > 1.0:
 			_show_notice("手动驾驶需保持上帝视角。")
 			return
-		_set_view_mode(VIEW_FOCUS, "已进入聚焦视角；中键拖拽或靠近屏幕边缘平移。")
+		_set_view_mode(VIEW_FOCUS, "已进入微观视角；中键拖拽或靠近屏幕边缘平移。")
 	else:
 		_set_view_mode(VIEW_GOD, "已进入上帝视角。")
 
@@ -709,9 +748,13 @@ func _set_view_mode(mode: int, notice: String = "") -> void:
 	view_mode = mode
 	view_transition_left = movement_settings.view_transition_time
 	if mode == VIEW_GOD:
-		camera_zoom_target = movement_settings.god_zoom_default
+		camera_zoom_target = minf(movement_settings.god_zoom_default, _god_zoom_limit())
+		camera_zoom = minf(camera_zoom, _god_zoom_limit())
+		_clamp_god_camera()
 	else:
-		focus_offset = Vector2.ZERO
+		focus_offset = island_bounds.get_center()
+		_clamp_focus_offset()
+		camera_world = island_pos + focus_offset
 		camera_zoom_target = movement_settings.focus_zoom_default
 	view_mode_changed.emit(mode)
 	if not notice.is_empty():
@@ -721,21 +764,27 @@ func _set_view_mode(mode: int, notice: String = "") -> void:
 
 func _adjust_zoom(amount: float) -> void:
 	if view_mode == VIEW_GOD:
-		camera_zoom_target = clampf(camera_zoom_target + amount, movement_settings.god_zoom_min, movement_settings.god_zoom_max)
+		var limit := _god_zoom_limit()
+		camera_zoom_target = clampf(camera_zoom_target + amount, minf(movement_settings.god_zoom_min, limit * 0.25), limit)
 	else:
 		camera_zoom_target = clampf(camera_zoom_target + amount, movement_settings.focus_zoom_min, movement_settings.focus_zoom_max)
 	view_transition_left = movement_settings.view_transition_time
 
 
 func _update_camera(delta: float) -> void:
+	if view_mode == VIEW_GOD:
+		camera_zoom_target = minf(camera_zoom_target, _god_zoom_limit())
+		camera_zoom = minf(camera_zoom, _god_zoom_limit())
 	view_transition_left = maxf(0.0, view_transition_left - delta)
 	var zoom_speed := maxf(0.01, absf(camera_zoom_target - camera_zoom) / maxf(0.05, movement_settings.view_transition_time))
 	camera_zoom = move_toward(camera_zoom, camera_zoom_target, zoom_speed * delta)
 	if view_mode == VIEW_FOCUS:
+		_clamp_focus_offset()
 		camera_world = island_pos + focus_offset
 	else:
-		var target: Vector2 = island_pos + island_velocity * movement_settings.camera_look_ahead_seconds
+		var target: Vector2 = island_pos + _island_visual_bounds().get_center() + island_velocity * movement_settings.camera_look_ahead_seconds
 		camera_world = camera_world.lerp(target, 1.0 - exp(-delta / movement_settings.camera_smooth_time))
+		_clamp_god_camera()
 
 
 func _update_focus_pan(delta: float) -> void:
@@ -826,6 +875,7 @@ func _update_weather_hazards(delta: float) -> void:
 		weather_hazard_left = 8.0
 		for plot in plots:
 			plot.weather_penalty = 1.0
+			plot.weather_kind = ""
 		return
 	weather_hazard_left -= delta
 	if weather_hazard_left > 0.0 or plots.is_empty():
@@ -833,12 +883,16 @@ func _update_weather_hazards(delta: float) -> void:
 	weather_hazard_left = 8.0 if kind == "snow" else 6.0
 	var index := weather_rng.randi_range(0, plots.size() - 1)
 	var plot: Dictionary = plots[index]
-	plot.weather_penalty = 0.55 if kind == "snow" else 0.35
+	plot.weather_kind = kind
+	plot.weather_penalty = _plot_weather_penalty(plot)
 	plots[index] = plot
 	if kind == "cyclone":
-		var mitigation := 1.0 - 0.18 * int(development.tech.forecast)
-		development.damage_cell(plot.cell, 28.0 * mitigation, "飓风破坏")
-		_show_notice("飓风毁坏了一块农田与其作物；离开风区后仍需修缮。", 4.0)
+		var mitigation: float = development.weather_damage_factor(plot.cell)
+		development.damage_cell(plot.cell, 28.0 * mitigation, "飓风破坏", false)
+		if int(plot.state) != 0:
+			plot.progress = maxf(0.0, float(plot.progress) - 0.35 * mitigation)
+			plot.state = 0 if float(development.tile_at(plot.cell).hp) <= 0.0 else 1
+		_show_notice("飓风损伤农田并损失作物进度；林木减灾 %d%%，仍需修缮。" % roundi(development.forest_protection(plot.cell) * 100), 4.0)
 	else:
 		_show_notice("积雪覆盖了一块农田；离开雪区后减速效果解除。", 3.0)
 
@@ -847,14 +901,26 @@ func _update_merchant(delta: float) -> void:
 		merchant_stay_left -= delta
 		if merchant_stay_left <= 0.0:
 			merchant_available = false
+			merchant_stay_left = 0.0
 			merchant_arrival_left = 210.0
-			_show_notice("流浪商人离开了。")
+			development.merchant_state_changed()
+			_show_notice("流浪商人已离开，交易结束。")
 		return
 	merchant_arrival_left -= delta
 	if merchant_arrival_left <= 0.0:
 		merchant_available = true
+		merchant_arrival_left = 0.0
 		merchant_stay_left = 75.0
-		_show_notice("流浪商人降落！打开 B 开发面板即可交易。", 6.0)
+		development.merchant_state_changed()
+		_show_notice("流浪商人已到访！点击下方金色商店入口购买或出售，停留 75 秒。", 8.0)
+		_play_tone(660.0, 0.18, -16.0)
+
+
+func _plot_weather_penalty(plot: Dictionary) -> float:
+	var kind := _weather_kind()
+	if kind not in ["snow", "cyclone"] or str(plot.get("weather_kind", "")) != kind: return 1.0
+	var base := 0.45 if kind == "snow" else 0.65
+	return 1.0 - base * development.weather_damage_factor(plot.cell)
 
 
 func _update_crops(delta: float) -> void:
@@ -864,8 +930,12 @@ func _update_crops(delta: float) -> void:
 		if int(plot.state) == 1:
 			var tile: Dictionary = development.tile_at(plot.cell)
 			var health := maxf(0.25, float(tile.get("hp", 100.0)) / 100.0)
-			var weather_penalty := float(plot.get("weather_penalty", 1.0))
-			plot.progress = minf(1.0, float(plot.progress) + delta * multiplier * weather_penalty * health / Development.Rules.CROP_GROW_SECONDS)
+			var weather_penalty := _plot_weather_penalty(plot)
+			plot.weather_penalty = weather_penalty
+			var local_growth := multiplier
+			if multiplier < 1.0 and _weather_kind() in ["storm", "snow", "cyclone"]:
+				local_growth = minf(maxf(multiplier, 0.85), 1.0 - (1.0 - multiplier) * (1.0 - development.forest_protection(plot.cell)))
+			plot.progress = minf(1.0, float(plot.progress) + delta * local_growth * weather_penalty * health / Development.Rules.CROP_GROW_SECONDS)
 			if float(plot.progress) >= 1.0:
 				plot.state = 2
 				_show_notice("作物成熟了！切换到种植工具后点击收获。")
@@ -958,6 +1028,13 @@ func _update_targets(delta: float) -> void:
 
 
 func _hazard_clearance(hazard: Dictionary) -> float:
+	if hazard.has("tiles"):
+		var bounds: Rect2 = IslandTiles.bounds(hazard.tiles)
+		var origin: Vector2 = hazard.pos - bounds.get_center()
+		var broad := IslandTiles.rect_clearance(Rect2(island_pos + island_bounds.position, island_bounds.size), Rect2(origin + bounds.position, bounds.size))
+		if broad > float(movement_settings.warning_radius_tiles) * float(movement_settings.tile_size): return broad
+		return IslandTiles.clearance(island_tiles, island_pos, hazard.tiles, origin)
+	# Legacy point hazards are used only by navigation warning probes.
 	var local_position: Vector2 = hazard.pos - island_pos
 	var relative := (local_position - island_bounds.get_center()).abs() - island_bounds.size * 0.5
 	var broad_distance := Vector2(maxf(relative.x, 0.0), maxf(relative.y, 0.0)).length() + minf(maxf(relative.x, relative.y), 0.0) - float(hazard.radius)
@@ -972,30 +1049,32 @@ func _hazard_clearance(hazard: Dictionary) -> float:
 
 
 func _check_collisions() -> void:
-	if collision_cooldown > 0.0 or island_velocity.length() < 35.0:
-		return
 	for index in range(hazards.size()):
 		var hazard: Dictionary = hazards[index]
-		if not bool(hazard.active) or bool(hazard.tethered):
+		if not bool(hazard.active) or bool(hazard.tethered) or not hazard.has("tiles"):
 			continue
-		var hazard_pos: Vector2 = hazard.pos
-		if _hazard_clearance(hazard) < 0.0:
+		var bounds: Rect2 = IslandTiles.bounds(hazard.tiles)
+		var origin: Vector2 = hazard.pos - bounds.get_center()
+		if not Rect2(island_pos + island_bounds.position, island_bounds.size).intersects(Rect2(origin + bounds.position, bounds.size)):
+			continue
+		var hit: Dictionary = IslandTiles.contact(island_tiles, island_pos, hazard.tiles, origin)
+		if hit.is_empty(): continue
+		var push: Vector2 = hit.normal
+		var impact_speed := maxf(0.0, -island_velocity.dot(push))
+		if collision_cooldown <= 0.0 and impact_speed >= 35.0:
 			collision_cooldown = 2.0
 			var hazard_mass := IslandTiles.mass(hazard.tiles)
-			var collision_cost := minf(energy, 8.0 + island_velocity.length() * 0.25 + hazard_mass * 0.5)
+			var collision_cost := minf(energy, 8.0 + impact_speed * 0.25 + hazard_mass * 0.5)
 			_consume_energy(collision_cost, "碰撞")
-			var removed: int = development.collision_at(hazard_pos, island_velocity.length(), hazard_mass)
-			var push: Vector2 = hazard_pos.direction_to(island_pos)
-			if push.length_squared() < 0.01:
-				push = Vector2.RIGHT
-			island_pos += push * 45.0
-			island_velocity *= -0.35
-			hazard.pos -= push * 65.0
-			hazards[index] = hazard
+			var removed: int = development.collision_at(hit.point, impact_speed, hazard_mass)
 			if autopilot_active:
 				_cancel_autopilot("发生碰撞")
 			_show_notice("撞击崩落 %d 格；质量与速度越大，波及范围越大。" % removed, 5.0)
-			return
+		# Resolve actual penetration even at low speed or during the damage cooldown.
+		island_pos += push * (float(hit.depth) + 1.0) * 0.4
+		hazard.pos -= push * (float(hit.depth) + 1.0) * 0.6
+		if impact_speed > 0.0: island_velocity += push * impact_speed * 1.35
+		return
 
 
 func _fire_hook(target_position: Vector2) -> void:
@@ -1123,43 +1202,47 @@ func _interact_with_plot(mouse_position: Vector2) -> void:
 		if _plot_rect(index).has_point(mouse_position):
 			selected_plot = index
 			hovered_plot = index
-			var plot: Dictionary = plots[index]
-			var crop_type: int = development.selected_crop if int(plot.state) == 0 else int(plot.crop_type)
-			var crop_name := _crop_name(crop_type)
-			if int(plot.state) == 0:
-				var farm_tile: Dictionary = development.tile_at(plot.cell)
-				if float(farm_tile.get("hp", 100.0)) < 100.0:
-					_show_notice("农田受损，必须先通过 B → 修缮恢复后才能播种。")
-					return
-				if seeds <= 0:
-					_show_notice("种子不足：B → 采集草地或林木，可以获得种子。")
-					return
-				seeds -= 1
-				plot.crop_type = crop_type
-				plot.state = 1
-				plot.progress = 0.0
-				plot.weather_penalty = 1.0
-				_show_notice("播种%s成功，雨水区会让作物生长得更快。" % crop_name)
-			elif int(plot.state) == 1:
-				_show_notice("%s生长进度 %d%%" % [crop_name, int(float(plot.progress) * 100.0)])
-			else:
-				var yield_count: int = development.crop_yield()
-				var coin_income: int = Development.Rules.HARVEST_COINS * yield_count
-				coins += coin_income
-				seeds += 1
-				harvested += 1
-				if int(plot.crop_type) == CROP_RICE:
-					rice_stock += yield_count
-				else:
-					energy_crop_stock += yield_count
-				plot.state = 0
-				plot.progress = 0.0
-				plot.weather_penalty = 1.0
-				_show_notice("收获%s ×%d：+%d 金币，返还 1 种子" % [crop_name, yield_count, coin_income])
-			plots[index] = plot
-			queue_redraw()
+			_work_plot(index, development.selected_crop)
 			return
 	_show_notice("请点击农田格；B → 开垦可以增加农田。")
+
+
+func _work_plot(index: int, planting_crop: int, quiet := false) -> bool:
+	if index < 0 or index >= plots.size(): return false
+	var plot: Dictionary = plots[index]
+	var crop_type: int = planting_crop if int(plot.state) == 0 else int(plot.crop_type)
+	var crop_name := _crop_name(crop_type)
+	if int(plot.state) == 0:
+		var farm_tile: Dictionary = development.tile_at(plot.cell)
+		if farm_tile.is_empty() or farm_tile.kind != "farm" or float(farm_tile.get("hp", 100.0)) < 100.0:
+			if not quiet: _show_notice("农田受损，请右键这格农田选择修缮后再播种。")
+			return false
+		if seed_stock(crop_type) <= 0:
+			if not quiet: _show_notice("%s种子不足：采集草地/林木或向商人购买对应种子。" % crop_name)
+			return false
+		add_crop_seeds(crop_type, -1)
+		plot.crop_type = crop_type
+		plot.state = 1
+		plot.progress = 0.0
+		plot.weather_penalty = 1.0
+		if not quiet: _show_notice("播种%s成功，雨水区会让作物生长得更快。" % crop_name)
+	elif int(plot.state) == 1:
+		if not quiet: _show_notice("%s生长进度 %d%%" % [crop_name, int(float(plot.progress) * 100.0)])
+		return false
+	else:
+		var yield_count: int = development.crop_yield()
+		var coin_income: int = development.harvest_coins(crop_type) * yield_count
+		coins += coin_income
+		add_crop_seeds(crop_type, 1)
+		harvested += 1
+		if crop_type == CROP_RICE: rice_stock += yield_count
+		else: energy_crop_stock += yield_count
+		plot.state = 0
+		plot.progress = 0.0
+		plot.weather_penalty = 1.0
+		if not quiet: _show_notice("收获%s ×%d：+%d 金币，返还 1 %s种子" % [crop_name, yield_count, coin_income, crop_name])
+	queue_redraw()
+	return true
 
 
 func _check_goal() -> void:
@@ -1193,6 +1276,13 @@ func _plot_world_rect(index: int) -> Rect2:
 func _crop_name(crop_type: int) -> String:
 	return "水稻" if crop_type == CROP_RICE else "番茄"
 
+func seed_stock(crop_type: int) -> int:
+	return rice_seeds if crop_type == CROP_RICE else tomato_seeds
+
+func add_crop_seeds(crop_type: int, amount: int) -> void:
+	if crop_type == CROP_RICE: rice_seeds += amount
+	else: tomato_seeds += amount
+
 
 func _build_hud() -> void:
 	var canvas := CanvasLayer.new()
@@ -1204,60 +1294,90 @@ func _build_hud() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	canvas.add_child(root)
 
-	var stats_panel := _make_panel(Vector2(18, 16), Vector2(542, 68), PANEL)
-	root.add_child(stats_panel)
-	var stats_row := HBoxContainer.new()
-	stats_row.add_theme_constant_override("separation", 12)
-	stats_panel.add_child(_with_margin(stats_row, 10))
-	money_label = _add_stat(stats_row, 0, "金币")
-	energy_label = _add_stat(stats_row, 1, "能源")
-	seed_label = _add_stat(stats_row, 3, "种子")
-	fuel_label = _add_stat(stats_row, 4, "产能作物")
-
-	var clock_panel := _make_panel(Vector2(578, 16), Vector2(166, 68), PANEL)
-	root.add_child(clock_panel)
+	var backdrop := Control.new()
+	backdrop.name = "SkyIslandHeaderCanvas"
+	backdrop.set_script(preload("res://scripts/hud_backdrop.gd"))
+	backdrop.position = Vector2(6, 4)
+	backdrop.size = Vector2(1140, 82)
+	root.add_child(backdrop)
+	# Keep the compact single row above its decorative floating-island canvas.
+	header_row = HBoxContainer.new()
+	header_row.name = "TopRow"
+	header_row.position = Vector2(14, 8)
+	header_row.size = Vector2(1124, 58)
+	header_row.add_theme_constant_override("separation", 10)
+	root.add_child(header_row)
+	var weather_block := HBoxContainer.new()
+	weather_block.custom_minimum_size = Vector2(188, 58)
+	weather_block.add_theme_constant_override("separation", 6)
+	header_row.add_child(weather_block)
+	weather_icon = _hud_texture("sun", 38)
+	weather_block.add_child(weather_icon)
 	var clock_box := VBoxContainer.new()
 	clock_box.alignment = BoxContainer.ALIGNMENT_CENTER
-	clock_panel.add_child(_with_margin(clock_box, 8))
+	clock_box.add_theme_constant_override("separation", 0)
+	weather_block.add_child(clock_box)
 	time_label = Label.new()
-	time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	time_label.add_theme_font_size_override("font_size", 20)
+	time_label.add_theme_font_size_override("font_size", 12)
 	time_label.add_theme_color_override("font_color", INK)
 	clock_box.add_child(time_label)
+	var growth_row := HBoxContainer.new()
+	clock_box.add_child(growth_row)
+	growth_row.add_child(_hud_texture("growth", 17))
 	weather_label = Label.new()
-	weather_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	weather_label.add_theme_font_size_override("font_size", 13)
-	weather_label.add_theme_color_override("font_color", Color("#76503b"))
-	clock_box.add_child(weather_label)
+	weather_label.add_theme_font_size_override("font_size", 16)
+	growth_row.add_child(weather_label)
+	var risk_row := HBoxContainer.new()
+	clock_box.add_child(risk_row)
+	weather_risk_icon = _hud_texture("damage", 13)
+	risk_row.add_child(weather_risk_icon)
+	weather_risk = Label.new()
+	weather_risk.add_theme_font_size_override("font_size", 11)
+	weather_risk.add_theme_color_override("font_color", Color("#a64d39"))
+	risk_row.add_child(weather_risk)
+	weather_timer = Label.new()
+	weather_timer.add_theme_font_size_override("font_size", 11)
+	weather_timer.add_theme_color_override("font_color", Color("#584b3b"))
+	risk_row.add_child(weather_timer)
 
-	navigation_panel = _make_panel(Vector2(18, 120), Vector2(336, 116), Color("#e8f1de"))
-	root.add_child(navigation_panel)
-	var navigation_box := VBoxContainer.new()
-	navigation_box.add_theme_constant_override("separation", 7)
-	navigation_panel.add_child(_with_margin(navigation_box, 10))
-	navigation_label = Label.new()
-	navigation_label.add_theme_font_size_override("font_size", 13)
-	navigation_label.add_theme_color_override("font_color", INK)
-	navigation_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	navigation_box.add_child(navigation_label)
-	var navigation_buttons := HBoxContainer.new()
-	navigation_buttons.add_theme_constant_override("separation", 6)
-	navigation_box.add_child(navigation_buttons)
-	view_button = _make_small_button("Tab 聚焦")
+	stats_row = HBoxContainer.new()
+	stats_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stats_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	stats_row.add_theme_constant_override("separation", 4)
+	header_row.add_child(stats_row)
+	for entry in [["land", "地块数量"], ["mass", "岛屿质量"], ["house", "房屋数量"], ["coins", "金币"], ["wood", "木材"], ["stone", "石头"], ["ore", "矿物"], ["magma", "岩浆晶"], ["energy", "能源 / 容量"], ["rice", "水稻库存"], ["tomato", "番茄 / 能源作物库存"], ["rice_seeds", "水稻种子"], ["tomato_seeds", "番茄种子"]]:
+		resource_labels[entry[0]] = _add_resource_stat(stats_row, entry[0], entry[1])
+	money_label = resource_labels.coins
+	energy_label = resource_labels.energy
+	fuel_label = resource_labels.tomato
+
+	navigation_buttons = HBoxContainer.new()
+	navigation_buttons.add_theme_constant_override("separation", 2)
+	navigation_buttons.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	header_row.add_child(navigation_buttons)
+	view_button = _make_icon_button("focus", "Tab / V · 微观视角")
 	view_button.pressed.connect(_toggle_view)
 	navigation_buttons.add_child(view_button)
-	map_button = _make_small_button("M 天空地图")
+	map_button = _make_icon_button("map", "M · 天空地图")
 	map_button.pressed.connect(func() -> void:
 		sky_map_open = not sky_map_open
 		_show_notice("天空地图：点击目的地，回车启航。" if sky_map_open else "已关闭天空地图。")
 	)
 	navigation_buttons.add_child(map_button)
-	fuel_button = _make_small_button("R 能源工厂")
-	fuel_button.pressed.connect(_refuel_from_crops)
+	for entry in [["build", "B · 岛屿开发", false], ["tech", "T · 科技树", true]]:
+		var button := _make_icon_button(entry[0], entry[1])
+		button.pressed.connect(development.toggle.bind(entry[2]))
+		navigation_buttons.add_child(button)
+	fuel_button = _make_icon_button("energy", "R · 选择能源来源")
+	fuel_button.pressed.connect(development.toggle_energy)
 	navigation_buttons.add_child(fuel_button)
 
-	guide_panel = _make_panel(Vector2(18, 244), Vector2(300, 42), Color("#eef2dc"))
+	var help_button := _make_icon_button("help", "按键指南")
+	help_button.pressed.connect(func() -> void: guide_panel.visible = not guide_panel.visible)
+	navigation_buttons.add_child(help_button)
+	guide_panel = _make_panel(Vector2(814, 74), Vector2(320, 110), Color("#eef2dc"))
 	root.add_child(guide_panel)
+	guide_panel.hide()
 	var guide_box := VBoxContainer.new()
 	guide_box.add_theme_constant_override("separation", 3)
 	guide_panel.add_child(_with_margin(guide_box, 8))
@@ -1269,23 +1389,20 @@ func _build_hud() -> void:
 	guide_title.add_theme_font_size_override("font_size", 14)
 	guide_title.add_theme_color_override("font_color", INK)
 	guide_header.add_child(guide_title)
-	var guide_toggle := _make_small_button("展开")
+	var guide_toggle := _make_small_button("×")
 	guide_toggle.custom_minimum_size = Vector2(62, 26)
 	guide_toggle.pressed.connect(func() -> void:
-		guide_expanded = not guide_expanded
-		guide_body.visible = guide_expanded
-		guide_panel.size.y = 108.0 if guide_expanded else 42.0
-		guide_toggle.text = "隐藏" if guide_expanded else "展开"
+		guide_panel.hide()
 	)
 	guide_header.add_child(guide_toggle)
 	guide_body = Label.new()
-	guide_body.text = "WASD 驾驶　Space 急停　M 地图\nTab 视角　R 能源厂　B 开发 / T 科技\n1/Q 抓钩　2/F 种植"
+	guide_body.text = "WASD 驾驶　Space 急停　M 地图\nTab 视角　R 能源厂　B 开发 / T 科技\n左侧选工具 · 右键地块操作\n1/Q 抓钩　2/F 种植　Esc 取消"
 	guide_body.add_theme_font_size_override("font_size", 12)
 	guide_body.add_theme_color_override("font_color", Color("#624635"))
-	guide_body.visible = false
+	guide_body.visible = true
 	guide_box.add_child(guide_body)
 
-	context_panel = _make_panel(Vector2(904, 120), Vector2(230, 196), Color("#f8eacb"))
+	context_panel = _make_panel(Vector2(904, 156), Vector2(230, 196), Color("#f8eacb"))
 	root.add_child(context_panel)
 	var context_box := VBoxContainer.new()
 	context_box.add_theme_constant_override("separation", 5)
@@ -1303,24 +1420,48 @@ func _build_hud() -> void:
 	context_label.add_theme_color_override("font_color", Color("#624635"))
 	context_box.add_child(context_label)
 
-	var toolbar := _make_panel(Vector2(380, 570), Vector2(392, 62), Color("#f9e8c3"))
-	root.add_child(toolbar)
-	var tools_row := HBoxContainer.new()
+	tool_sidebar = _make_panel(Vector2(14, 146), Vector2(120, 330), Color("#f9e8c3"))
+	tool_sidebar.name = "QuickToolsSidebar"
+	root.add_child(tool_sidebar)
+	var tools_row := VBoxContainer.new()
 	tools_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	tools_row.add_theme_constant_override("separation", 7)
-	toolbar.add_child(_with_margin(tools_row, 6))
-	hook_button = _make_tool_button("1 / Q  抓钩", 2)
+	tools_row.add_theme_constant_override("separation", 6)
+	tool_sidebar.add_child(_with_margin(tools_row, 7))
+	hook_button = _make_tool_button("抓钩", 2)
 	hook_button.pressed.connect(func() -> void: _select_tool(TOOL_HOOK))
-	hook_button.custom_minimum_size = Vector2(118, 46)
+	hook_button.custom_minimum_size = Vector2(100, 44)
 	tools_row.add_child(hook_button)
 	seed_button = _make_tool_button("水稻", 3)
+	seed_button.icon = _hud_icon("rice_seeds")
 	seed_button.pressed.connect(_select_crop_tool.bind(CROP_RICE))
-	seed_button.custom_minimum_size = Vector2(108, 46)
+	seed_button.custom_minimum_size = Vector2(100, 44)
 	tools_row.add_child(seed_button)
 	tomato_button = _make_tool_button("番茄", 3)
+	tomato_button.icon = _hud_icon("tomato_seeds")
 	tomato_button.pressed.connect(_select_crop_tool.bind(CROP_TOMATO))
-	tomato_button.custom_minimum_size = Vector2(108, 46)
+	tomato_button.custom_minimum_size = Vector2(100, 44)
 	tools_row.add_child(tomato_button)
+	gather_button = _make_tool_button("采集", 5)
+	gather_button.icon = _hud_icon("build")
+	gather_button.custom_minimum_size = Vector2(100, 44)
+	gather_button.pressed.connect(development.select_action.bind("gather"))
+	tools_row.add_child(gather_button)
+	var tech_button := _make_tool_button("科技", 1)
+	tech_button.icon = _hud_icon("tech")
+	tech_button.custom_minimum_size = Vector2(100, 44)
+	tech_button.tooltip_text = "T · 科技树"
+	tech_button.pressed.connect(development.toggle.bind(true))
+	tools_row.add_child(tech_button)
+	for button in [hook_button, seed_button, tomato_button, gather_button, tech_button]:
+		button.add_theme_font_size_override("font_size", 12)
+		button.add_theme_constant_override("icon_max_width", 25)
+		button.focus_mode = Control.FOCUS_NONE
+	var tool_hint := Label.new()
+	tool_hint.text = "右键地块\n打开操作"
+	tool_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tool_hint.add_theme_font_size_override("font_size", 11)
+	tool_hint.add_theme_color_override("font_color", Color("#806548"))
+	tools_row.add_child(tool_hint)
 
 	notice_label = Label.new()
 	notice_label.position = Vector2(24, 588)
@@ -1470,7 +1611,7 @@ func _capture_development_preview(show_weather := false) -> void:
 		coins = 999
 		rice_stock = 40
 		development.materials = {"wood": 99, "stone": 99, "ore": 99, "magma": 9}
-		for key in ["engine", "storage", "bioenergy", "hook", "development", "agriculture"]:
+		for key in ["engine", "storage", "bioenergy", "hook", "development", "forestry"]:
 			development.tech[key] = 1
 		development.sync()
 		development.toggle(true)
@@ -1518,30 +1659,58 @@ func _with_margin(child: Control, margin_value: int) -> MarginContainer:
 	return margin
 
 
-func _add_stat(parent: HBoxContainer, icon_index: int, caption: String) -> Label:
-	var row := HBoxContainer.new()
-	row.custom_minimum_size = Vector2(119, 46)
-	row.add_theme_constant_override("separation", 6)
-	parent.add_child(row)
+func _hud_icon(key: String) -> Texture2D:
+	var original := {"coins": 0, "energy": 1, "rice": 4, "sun": 5, "clear": 5, "rain": 6, "storm": 7}
+	if original.has(key): return _icon(int(original[key]))
+	return _atlas_region(hud_icon_atlas, Rect2(HUD_ICONS.find(key) * 32, 0, 32, 32))
+
+
+func _hud_texture(key: String, pixels: int) -> TextureRect:
 	var icon := TextureRect.new()
-	icon.custom_minimum_size = Vector2(38, 38)
-	icon.texture = _icon(icon_index)
+	icon.custom_minimum_size = Vector2(pixels, pixels)
+	icon.texture = _hud_icon(key)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	return icon
+
+
+func _make_icon_button(key: String, hint: String) -> Button:
+	var button := _make_small_button("")
+	button.icon = _hud_icon(key)
+	button.expand_icon = true
+	button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	button.add_theme_constant_override("icon_max_width", 25)
+	button.custom_minimum_size = Vector2(28, 32)
+	button.tooltip_text = hint
+	button.focus_mode = Control.FOCUS_NONE
+	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
+		button.add_theme_stylebox_override(state, StyleBoxEmpty.new())
+	button.add_theme_color_override("icon_hover_color", Color("#fff1b8"))
+	button.add_theme_color_override("icon_pressed_color", Color("#ffd875"))
+	return button
+
+
+func _add_resource_stat(parent: HBoxContainer, key: String, caption: String) -> Label:
+	var row := HBoxContainer.new()
+	row.custom_minimum_size = Vector2(82 if key == "energy" else (56 if key == "mass" else 42), 32)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 2)
+	row.tooltip_text = caption
+	parent.add_child(row)
+	var icon := _hud_texture(key, 22)
+	icon.tooltip_text = caption
 	row.add_child(icon)
-	var box := VBoxContainer.new()
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_child(box)
-	var small := Label.new()
-	small.text = caption
-	small.add_theme_font_size_override("font_size", 11)
-	small.add_theme_color_override("font_color", Color("#876044"))
-	box.add_child(small)
 	var value := Label.new()
-	value.add_theme_font_size_override("font_size", 18)
+	value.add_theme_font_size_override("font_size", 13)
 	value.add_theme_color_override("font_color", INK)
-	box.add_child(value)
+	value.add_theme_color_override("font_shadow_color", Color(1.0, 1.0, 0.88, 0.5))
+	value.add_theme_constant_override("shadow_offset_x", 0)
+	value.add_theme_constant_override("shadow_offset_y", 1)
+	value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	value.clip_text = true
+	value.tooltip_text = caption
+	row.add_child(value)
 	return value
 
 
@@ -1592,6 +1761,9 @@ func _icon(index: int) -> AtlasTexture:
 
 
 func _select_tool(tool: int) -> void:
+	if development.tile_menu != null: development.tile_menu.close()
+	development.move_from = development.NONE
+	development.trim_pending = development.NONE
 	selected_tool = tool
 	if selected_tool != TOOL_SEED:
 		selected_plot = -1
@@ -1614,6 +1786,9 @@ func _update_tool_styles() -> void:
 	hook_button.add_theme_stylebox_override("normal", selected if selected_tool == TOOL_HOOK else normal)
 	seed_button.add_theme_stylebox_override("normal", selected if selected_tool == TOOL_SEED and development.selected_crop == CROP_RICE else normal)
 	tomato_button.add_theme_stylebox_override("normal", selected if selected_tool == TOOL_SEED and development.selected_crop == CROP_TOMATO else normal)
+	if gather_button != null:
+		gather_button.add_theme_stylebox_override("normal", selected if selected_tool == 2 and development.action == "gather" else normal)
+		gather_button.add_theme_stylebox_override("hover", _button_style(Color("#ffe39a"), Color("#7c512f")))
 	hook_button.add_theme_stylebox_override("hover", _button_style(Color("#ffe39a"), Color("#7c512f")))
 	seed_button.add_theme_stylebox_override("hover", _button_style(Color("#ffe39a"), Color("#7c512f")))
 	tomato_button.add_theme_stylebox_override("hover", _button_style(Color("#ffe39a"), Color("#7c512f")))
@@ -1622,29 +1797,68 @@ func _update_tool_styles() -> void:
 func _update_hud() -> void:
 	if money_label == null:
 		return
+	tool_sidebar.visible = demo_started and not sky_map_open and not development.modal.visible
 	money_label.text = str(coins)
-	energy_label.text = "%d/%d E%s" % [int(energy), int(energy_capacity), " !" if energy < energy_capacity * 0.2 or energy_warning_left > 0.0 else ""]
-	energy_label.tooltip_text = energy_warning_text if energy_warning_left > 0.0 else "R 手动补能；T 研究自动填充与高效利用"
+	energy_label.text = "%d/%d%s" % [int(energy), int(energy_capacity), " !" if energy < energy_capacity * 0.2 or energy_warning_left > 0.0 else ""]
+	energy_label.tooltip_text = energy_warning_text if energy_warning_left > 0.0 else development.fuel_status() + "；R 选择来源"
 	if energy / energy_capacity < 0.2 or energy_warning_left > 0.0:
 		energy_label.add_theme_color_override("font_color", Color("#b87626"))
 	else:
 		energy_label.add_theme_color_override("font_color", INK)
-	seed_label.text = str(seeds)
-	fuel_label.text = "稻%d 能%d" % [rice_stock, energy_crop_stock]
+	resource_labels.rice_seeds.text = str(rice_seeds)
+	resource_labels.tomato_seeds.text = str(tomato_seeds)
+	fuel_label.text = str(energy_crop_stock)
+	resource_labels.land.text = str(island_tiles.size())
+	resource_labels.mass.text = "%.1f" % island_mass
+	var houses := 0
+	for tile in island_tiles:
+		if not str(tile.facility).is_empty(): houses += 1
+	resource_labels.house.text = str(houses)
+	resource_labels.rice.text = str(rice_stock)
+	for key in development.materials:
+		resource_labels[key].text = str(development.materials[key])
+	for key in resource_labels:
+		var label: Label = resource_labels[key]
+		if key != "energy":
+			var exact := float(label.text)
+			label.tooltip_text = "%s：%s" % [label.get_parent().tooltip_text, label.text]
+			if exact >= 1000000.0: label.text = "%.1fM" % (exact / 1000000.0)
+			elif exact >= 10000.0: label.text = "%.0fk" % (exact / 1000.0)
+			elif exact >= 1000.0: label.text = "%.1fk" % (exact / 1000.0)
+		label.add_theme_font_size_override("font_size", 11 if label.text.length() > 3 else 13)
 	var hour := int(day_minutes / 60.0)
 	var minute := int(day_minutes) % 60
-	time_label.text = "第 1 天　%02d:%02d" % [hour, minute]
-	if current_weather < 0:
-		weather_label.text = "普通气候 · 生长 ×1.0"
-	else:
-		var zone: Dictionary = zones[current_weather]
-		weather_label.text = "%s ×%.2f · %ds" % [str(zone.name), _growth_multiplier(), int(zone.remaining)]
-	var view_name := "上帝" if view_mode == VIEW_GOD else "聚焦"
+	time_label.text = "第 %d 天　%02d:%02d" % [day_number, hour, minute]
+	var kind := _weather_kind()
+	weather_icon.texture = _hud_icon(kind)
+	weather_icon.tooltip_text = WeatherSystem.NAMES.get(kind, "普通气候")
+	var growth := _growth_multiplier()
+	weather_label.text = "%s ×%.2f" % ["↑" if growth > 1.0 else ("↓" if growth < 1.0 else "·"), growth]
+	weather_label.add_theme_color_override("font_color", Color("#487344") if growth >= 1.0 else Color("#b2503d"))
+	weather_label.tooltip_text = "作物生长速度 ×%.2f（已计入天气预报科技）" % growth
+	weather_timer.text = "◷ %ds" % ceili(zones[current_weather].remaining) if current_weather >= 0 else "—"
+	weather_timer.tooltip_text = "当前天气剩余时间"
+	weather_risk_icon.visible = kind in ["snow", "cyclone"] or int(development.tech.forecast) > 0
+	weather_risk_icon.texture = _hud_icon("damage" if kind in ["snow", "cyclone"] else "shield")
+	weather_risk.text = ""
+	weather_risk.tooltip_text = ""
+	if kind == "cyclone":
+		weather_risk.text = "−%.0f / 6s" % (28.0 * (1.0 - 0.18 * int(development.tech.forecast)))
+		weather_risk.tooltip_text = "每 6 秒随机农田受损并损失作物进度。附近林木与预报科技可减灾，但至少承受 20% 损伤；离开后仍需修缮。"
+	elif kind == "snow":
+		weather_risk.text = "−45% / 8s"
+		weather_risk.tooltip_text = "每 8 秒积雪覆盖随机农田，基础额外减速 45%；林木和预报可减轻，离开雪区后解除。"
+	elif int(development.tech.forecast) > 0:
+		weather_risk.text = "+%d" % int(development.tech.forecast)
+		weather_risk.tooltip_text = "天气预报等级：强化天气增益、减轻天气损失"
+	var view_name := "上帝" if view_mode == VIEW_GOD else "微观"
 	var navigation_state := autopilot_state if autopilot_active else "手动"
 	var boundary_text := " · 云海边缘减速 50%" if soft_boundary_active else ""
-	navigation_label.text = "%d 地块　质量 %.1f　速度 %.2f 格/s\n%s视角 · %s%s　坐标 %d,%d" % [island_tiles.size(), island_mass, island_velocity.length() / movement_settings.tile_size, view_name, navigation_state, boundary_text, int((island_pos.x - world_origin.x) / movement_settings.tile_size), int((island_pos.y - world_origin.y) / movement_settings.tile_size)]
-	view_button.text = "Tab %s" % ("上帝" if view_mode == VIEW_FOCUS else "聚焦")
-	map_button.text = "M %s地图" % ("关闭" if sky_map_open else "天空")
+	navigation_buttons.tooltip_text = "%s视角 · %s%s · %.2f 格/s · 坐标 %d,%d" % [view_name, navigation_state, boundary_text, island_velocity.length() / movement_settings.tile_size, int((island_pos.x - world_origin.x) / movement_settings.tile_size), int((island_pos.y - world_origin.y) / movement_settings.tile_size)]
+	view_button.tooltip_text = "Tab / V · 切换为%s视角" % ("上帝" if view_mode == VIEW_FOCUS else "微观")
+	view_button.modulate = Color("#ffda82") if view_mode == VIEW_FOCUS else Color.WHITE
+	map_button.tooltip_text = "M · %s天空地图" % ("关闭" if sky_map_open else "打开")
+	map_button.modulate = Color("#ffda82") if sky_map_open else Color.WHITE
 	var rice_ready := 0
 	var tomato_ready := 0
 	for plot_value in plots:
@@ -1653,14 +1867,13 @@ func _update_hud() -> void:
 			else: tomato_ready += 1
 	seed_button.text = "水稻%s" % (" [%d]" % rice_ready if rice_ready > 0 else "")
 	tomato_button.text = "番茄%s" % (" [%d]" % tomato_ready if tomato_ready > 0 else "")
-	seed_button.tooltip_text = "选择水稻"
-	tomato_button.tooltip_text = "选择番茄"
+	seed_button.tooltip_text = "选择水稻 · 稻种 %d（只消耗水稻种子）" % rice_seeds
+	tomato_button.tooltip_text = "选择番茄 · 番茄种子 %d（只消耗番茄种子）" % tomato_seeds
 	hook_button.disabled = not development.has_facility("grapple")
 	hook_button.tooltip_text = "研究抓钩工程并建造抓钩小屋" if hook_button.disabled else "发射抓钩"
-	var has_fuel := (int(development.tech.bioenergy) > 0 and rice_stock + energy_crop_stock > 0) or (int(development.tech.mineral_energy) > 0 and int(development.materials.ore) > 0) or (int(development.tech.geothermal) > 0 and int(development.materials.magma) > 0)
-	fuel_button.disabled = not development.has_facility("energy") or not has_fuel or energy >= energy_capacity - 0.01
-	navigation_panel.visible = not sky_map_open
-	context_panel.visible = not sky_map_open
+	fuel_button.disabled = false
+	fuel_button.tooltip_text = "R · 选择能源来源\n" + development.fuel_status()
+	if sky_map_open: context_panel.hide()
 	map_clip.visible = sky_map_open
 	if sky_map_open:
 		map_ink.queue_redraw()
@@ -1668,14 +1881,18 @@ func _update_hud() -> void:
 
 
 func _update_context_card() -> void:
+	context_panel.hide()
+	if sky_map_open or development.modal.visible or development.tile_menu.is_open(): return
 	var mouse := get_viewport().get_mouse_position()
 	var own_cell: Vector2i = development.cell_at(_screen_to_world(mouse))
 	if not development.tile_at(own_cell).is_empty():
+		context_panel.show()
 		context_title_label.text = "地块档案 · %d,%d" % [own_cell.x, own_cell.y]
 		context_label.text = development.tile_description(own_cell)
 		return
 	for target in targets:
-		if bool(target.active) and mouse.distance_to(_world_to_screen(target.pos)) < 42.0 * camera_zoom:
+		if bool(target.active) and view_mode == VIEW_GOD and _radar_visible(target.pos) and mouse.distance_to(_world_to_screen(target.pos)) < 42.0 * camera_zoom:
+			context_panel.show()
 			if target.has("island"):
 				var lock_reason := _target_lock_reason(target)
 				context_title_label.text = "商店岛" if bool(target.island.get("shop", false)) else "待接入岛屿"
@@ -1686,19 +1903,10 @@ func _update_context_card() -> void:
 			return
 	for hazard in hazards:
 		if bool(hazard.active) and mouse.distance_to(_world_to_screen(hazard.pos)) < float(hazard.radius) * camera_zoom:
+			context_panel.show()
 			context_title_label.text = "野外岛屿"
 			context_label.text = "%s · %s · %d 格\n%s" % [str(hazard.name), str(hazard.get("rarity", "普通")), hazard.tiles.size(), str(hazard.get("report", "可勘探；接入后采集"))]
 			return
-	for zone in zones:
-		if mouse.distance_to(_world_to_screen(zone.pos)) < float(zone.radius) * camera_zoom:
-			context_title_label.text = "天气区域"
-			context_label.text = "%s\n\n作物生长倍率：×%.2f\n驾驶浮岛进入区域即可生效。" % [str(zone.name), float(zone.growth)]
-			return
-	if selected_plot >= 0 and selected_tool == TOOL_SEED:
-		_set_plot_context(selected_plot)
-		return
-	context_title_label.text = "岛屿观察"
-	context_label.text = "%d 格 · 质量 %.1f\n%s\nB 开发 · T 科技" % [island_tiles.size(), island_mass, "尚无引擎，先在岛上发展" if development.engine_power() <= 0.0 else "引擎在线，可以启航"]
 
 
 func _fit_context_panel() -> void:
@@ -1710,12 +1918,13 @@ func _fit_context_panel() -> void:
 
 func _set_plot_context(index: int) -> void:
 	var plot: Dictionary = plots[index]
-	var crop_name := _crop_name(int(plot.crop_type))
+	var crop_type: int = development.selected_crop if int(plot.state) == 0 else int(plot.crop_type)
+	var crop_name := _crop_name(crop_type)
 	var yield_count: int = development.crop_yield()
-	var income: int = Development.Rules.HARVEST_COINS * yield_count
+	var income: int = development.harvest_coins(crop_type) * yield_count
 	context_title_label.text = "农田地块 · %d,%d" % [int(plot.cell.x), int(plot.cell.y)]
 	if int(plot.state) == 0:
-		context_label.text = "%s田 · 空闲\n播种 −1 种子\n预计产量 ×%d · %d 金" % [crop_name, yield_count, income]
+		context_label.text = "%s田 · 空闲\n播种 −1 %s种子（库存 %d）\n预计产量 ×%d · %d 金" % [crop_name, crop_name, seed_stock(crop_type), yield_count, income]
 	elif int(plot.state) == 1:
 		context_label.text = "%s · 生长 %d%%\n约 %d 秒成熟\n综合效率 ×%.2f" % [crop_name, int(float(plot.progress) * 100.0), _crop_seconds_left(plot), _growth_multiplier() * float(plot.get("weather_penalty", 1.0))]
 	else:
@@ -1730,6 +1939,10 @@ func _growth_multiplier() -> float:
 		return 1.0
 	var zone: Dictionary = zones[current_weather]
 	return development.weather_growth(str(zone.kind), float(zone.growth))
+
+
+func _weather_kind() -> String:
+	return "clear" if current_weather < 0 or current_weather >= zones.size() else str(zones[current_weather].kind)
 
 
 func _crop_energy(crop_type: int) -> int:
@@ -1754,7 +1967,6 @@ func _draw() -> void:
 		var phase := Time.get_ticks_msec() * 0.09
 		shake = Vector2(sin(phase), cos(phase * 1.37)) * screen_shake_strength * (screen_shake_time / 0.3)
 	draw_set_transform(VIEW_CENTER + shake - camera_world * camera_zoom, 0.0, Vector2(camera_zoom, camera_zoom))
-	_draw_weather_zones()
 	_draw_targets()
 	_draw_hazards()
 	_draw_island()
@@ -1787,20 +1999,10 @@ func _draw_cloud(position_value: Vector2, scale_value: float) -> void:
 	draw_rect(Rect2(position_value + Vector2(-42, 2) * scale_value, Vector2(84, 25) * scale_value), cloud_color)
 
 
-func _draw_weather_zones() -> void:
-	for zone in zones:
-		if not _world_visible(zone.pos, float(zone.radius)):
-			continue
-		draw_circle(zone.pos, float(zone.radius), zone.color)
-		draw_arc(zone.pos, float(zone.radius), 0, TAU, 72, zone.edge, 3.0)
-		draw_arc(zone.pos, float(zone.radius) - 9.0, 0, TAU, 72, Color(zone.edge, 0.45), 1.5)
-		var icon_texture := _icon(int(zone.icon))
-		draw_texture_rect(icon_texture, Rect2(zone.pos - Vector2(28, 28), Vector2(56, 56)), false, Color(1, 1, 1, 0.82))
-
-
 func _draw_targets() -> void:
+	if view_mode == VIEW_FOCUS: return
 	for target in targets:
-		if not bool(target.active) or target.has("island") or not _world_visible(target.pos, 40.0):
+		if not bool(target.active) or target.has("island") or not _radar_visible(target.pos) or not _world_visible(target.pos, 40.0):
 			continue
 		var position_value: Vector2 = target.pos
 		var type_value := str(target.type)
@@ -1821,19 +2023,20 @@ func _draw_targets() -> void:
 
 
 func _draw_hazards() -> void:
+	if view_mode == VIEW_FOCUS: return
 	for hazard in hazards:
-		if not bool(hazard.active) or not _world_visible(hazard.pos, 200.0):
+		if not bool(hazard.active) or not _radar_visible(hazard.pos) or not _world_visible(hazard.pos, 200.0):
 			continue
 		var p: Vector2 = hazard.pos
 		var bounds: Rect2 = IslandTiles.bounds(hazard.tiles)
-		draw_colored_polygon(_ellipse_points(p + Vector2(16, bounds.size.y * 0.5 + 24), Vector2(bounds.size.x * 0.55, 30), 20), Color(0.19, 0.28, 0.30, 0.10))
+		IslandTiles.draw_shadow(self, p - bounds.get_center(), hazard.tiles)
 		IslandTiles.draw_ground(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, terrain_textures)
-		IslandTiles.draw_decor(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, int(hazard.biome) == 1, tree_texture, true)
+		IslandTiles.draw_decor(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, int(hazard.biome) == 1, tree_texture, true, animation_time, wind_strength, _tree_pointer())
 
 
 func _draw_island() -> void:
 	var p := island_pos
-	draw_colored_polygon(_ellipse_points(p + Vector2(island_bounds.get_center().x + 14, island_bounds.end.y + 8), Vector2(island_bounds.size.x * 0.52, 62), 32), Color(0.18, 0.24, 0.26, 0.13))
+	IslandTiles.draw_shadow(self, p, island_tiles)
 	IslandTiles.draw_ground(self, p, island_tiles, IslandTiles.CELL_SIZE, terrain_textures)
 
 	var ordered := island_tiles.duplicate()
@@ -1844,22 +2047,22 @@ func _draw_island() -> void:
 	for tile in ordered:
 		if plot_indices.has(tile.cell):
 			_draw_plot(int(plot_indices[tile.cell]))
-		var tree_offset := Vector2.ZERO
-		if tile.kind == "tree":
-			# Preserve the large tree; move its trunk within its cell, not its canopy pixels.
-			tree_offset.x = -12.0 if tile.cell.x < 0 else 12.0
-		IslandTiles.draw_decor(self, p + tree_offset, [tile], IslandTiles.CELL_SIZE, false, tree_texture, true)
+		IslandTiles.draw_decor(self, p, [tile], IslandTiles.CELL_SIZE, false, tree_texture, true, animation_time, wind_strength, _tree_pointer())
 		var center: Vector2 = IslandTiles.cell_rect(p, tile.cell).get_center()
 		var facility := str(tile.facility)
 		if facility == "grapple":
-			_draw_building(grapple_hut_texture, center + Vector2(12, 20), 100.0)
+			_draw_building(grapple_hut_texture, center + Vector2(12, 20), 100.0, facility)
 		elif facility == "water":
-			_draw_building(water_grain_hut_texture, center + Vector2(6, 20), 88.0)
+			_draw_building(water_grain_hut_texture, center + Vector2(6, 20), 88.0, facility)
 		elif facility == "energy":
-			_draw_building(water_grain_hut_texture, center + Vector2(6, 20), 88.0)
+			_draw_building(water_grain_hut_texture, center + Vector2(6, 20), 88.0, facility)
 			draw_circle(center + Vector2(20, -24), 7.0, Color("#f1bd45"))
 		elif facility == "power":
-			_draw_building(power_hut_texture, center + Vector2(0, 20), 92.0)
+			_draw_building(power_hut_texture, center + Vector2(0, 20), 92.0, facility)
+		elif facility == "farm_hut":
+			_draw_building(water_grain_hut_texture, center + Vector2(6, 20), 88.0, "water")
+			draw_rect(Rect2(center + Vector2(-30, -34), Vector2(60, 17)), Color("#417451"))
+			draw_string(ThemeDB.fallback_font, center + Vector2(-24, -21), "农务 R%d" % development.farm_radius(tile), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
 		if facility != "":
 			draw_string(ThemeDB.fallback_font, center + Vector2(-22, 32), "Lv.%d" % int(tile.get("level", 1)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, INK)
 		if float(tile.get("hp", 100.0)) < 100.0:
@@ -1872,24 +2075,70 @@ func _draw_island() -> void:
 			draw_rect(IslandTiles.cell_rect(p, selected_cell).grow(-2), Color("#ffe88d"), false, 3.0)
 		if development.trim_pending != development.NONE:
 			draw_rect(IslandTiles.cell_rect(p, development.trim_pending), Color(1.0, 0.2, 0.15, 0.3))
-
-	_draw_steward(p + Vector2(-12, 164))
-	if merchant_available:
-		_draw_steward(p + Vector2(42, 164))
-		draw_string(ThemeDB.fallback_font, p + Vector2(22, 184), "商人", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#7a3f76"))
+	if development.tile_menu != null and development.tile_menu.is_open():
+		draw_rect(IslandTiles.cell_rect(p, development.tile_menu.cell).grow(-2), Color("#ffe88d"), false, 3.0)
+	_draw_management_range()
 
 
-func _draw_building(texture: Texture2D, bottom_center: Vector2, width: float) -> void:
+func _tree_pointer() -> Vector2:
+	if sky_map_open or not demo_started or development.modal.visible: return Vector2.INF
+	if get_viewport().gui_get_hovered_control() != null: return Vector2.INF
+	return _screen_to_world(get_viewport().get_mouse_position())
+
+
+func _draw_management_range() -> void:
+	var cell: Vector2i = development.tile_menu.cell if development.tile_menu.is_open() else development.cell_at(_tree_pointer()) if _tree_pointer().is_finite() else development.NONE
+	var hut: Dictionary = development.tile_at(cell)
+	if hut.is_empty() or str(hut.facility) != "farm_hut": return
+	var radius: int = development.farm_radius(hut)
+	for tile in island_tiles:
+		if tile.kind == "farm" and Vector2(tile.cell).distance_to(Vector2(cell)) <= radius:
+			draw_rect(IslandTiles.cell_rect(island_pos, tile.cell).grow(-3), Color(0.42, 0.9, 0.62, 0.25))
+	var points := _ellipse_points(island_pos + Vector2(cell) * IslandTiles.CELL_SIZE, IslandTiles.CELL_SIZE * radius, 64)
+	points.append(points[0])
+	draw_polyline(points, Color("#a7f0ad"), 2.0)
+
+func _draw_building(texture: Texture2D, bottom_center: Vector2, width: float, kind := "water") -> void:
 	var source_size := texture.get_size()
 	var size := Vector2(width, width * source_size.y / source_size.x)
 	var destination := Rect2(bottom_center - Vector2(size.x * 0.5, size.y), size)
 	draw_texture_rect(texture, destination, false)
+	var phase := bottom_center.x * 0.03 + bottom_center.y * 0.02
+	var chimney_uv: Vector2 = {"water": Vector2(0.49, 0.06), "energy": Vector2(0.49, 0.06), "power": Vector2(0.88, 0.07), "grapple": Vector2(0.17, 0.10)}[kind]
+	_draw_chimney_smoke(destination.position + size * chimney_uv, phase, kind == "power" or kind == "energy")
+	if kind in ["water", "energy"]:
+		var light := destination.position + size * Vector2(0.81, 0.79)
+		var glow := 0.20 + (sin(animation_time * 2.5 + phase) + 1.0) * 0.12
+		draw_rect(Rect2(light - Vector2(4, 5), Vector2(8, 10)), Color(0.86, 1.0, 0.43, glow))
+	elif kind == "power":
+		# Turning spokes follow the flywheel already painted on the engine.
+		var hub := destination.position + size * Vector2(0.77, 0.58)
+		for spoke in range(4):
+			var direction := Vector2.from_angle(animation_time * 2.8 + spoke * TAU / 4.0)
+			draw_line(hub + direction * 3.0, hub + direction * 9.0, Color("#f2aa58"), 2.0)
+		draw_circle(hub, 2.5, Color("#6b4b38"))
+	else:
+		var lamp := destination.position + size * Vector2(0.12, 0.67)
+		draw_rect(Rect2(lamp, Vector2(4, 5)), Color(1.0, 0.75, 0.32, 0.28 + sin(animation_time * 3.0 + phase) * 0.15))
 
 
-func _draw_steward(bottom_center: Vector2) -> void:
-	var height := 40.0
-	var width := height * float(steward_texture.get_width()) / maxf(1.0, float(steward_texture.get_height()))
-	draw_texture_rect(steward_texture, Rect2(bottom_center - Vector2(width * 0.5, height), Vector2(width, height)), false)
+func _draw_chimney_smoke(chimney: Vector2, phase: float, busy: bool) -> void:
+	# Separate rounded white puffs rise at a steady speed. Gentle lateral
+	# drift never turns the plume into a horizontal streak, even in a cyclone.
+	var silhouette := PackedVector2Array([
+		Vector2(-1.5, 0.35), Vector2(-1.6, -0.1), Vector2(-1.3, -0.65),
+		Vector2(-0.65, -0.7), Vector2(-0.4, -1.15), Vector2(0.2, -1.25),
+		Vector2(0.75, -0.9), Vector2(0.85, -0.45), Vector2(1.3, -0.35),
+		Vector2(1.6, 0.1), Vector2(1.35, 0.6), Vector2(-1.0, 0.6)])
+	for puff in range(4):
+		var age := fposmod(animation_time / (4.0 if busy else 4.8) + phase * 0.13 + float(puff) / 4.0, 1.0)
+		var drift := -minf(wind_strength, 0.4) * age * 8.0 + sin(age * 4.0 + phase) * age * 2.0
+		var p := chimney + Vector2(drift, -age * 86.0)
+		var radius := 2.5 + age * 3.8
+		var opacity := smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.62, 1.0, age)) * 0.88
+		var points := PackedVector2Array()
+		for point in silhouette: points.append(p + point * radius)
+		draw_colored_polygon(points, Color(1.0, 1.0, 1.0, opacity))
 
 
 func _draw_plot(index: int) -> void:
@@ -1926,7 +2175,9 @@ func _draw_plot(index: int) -> void:
 	var baseline := 628.0 if rice else 616.0
 	var sprite_size := source_rect.size * source_scale
 	var destination := Rect2(rect.get_center() + Vector2(-sprite_size.x * 0.5, 17.0 - baseline * source_scale), sprite_size)
-	draw_texture_rect_region(crop_texture, destination, source_rect)
+	var phase := float(plot.cell.x) * 1.8 + float(plot.cell.y) * 2.4
+	var bend := IslandTiles.wind_bend(animation_time, phase, wind_strength) * (10.0 if rice else 7.0) * (0.45 + float(stage) * 0.14)
+	IslandTiles.draw_wind_sprite(self, crop_texture, destination, source_rect, rect.get_center().y + 17.0, bend)
 	if not show_status:
 		return
 	if state == 1:
@@ -1971,10 +2222,6 @@ func _draw_hook() -> void:
 		var progress_origin := hook_pos + Vector2(-42, 56)
 		draw_rect(Rect2(progress_origin, Vector2(84, 8)), INK)
 		draw_rect(Rect2(progress_origin + Vector2(2, 2), Vector2(80 * progress, 4)), GRASS_LIGHT)
-		for worker in range(3):
-			var worker_pos := origin.lerp(hook_pos, minf(1.0, progress * 3.0)) + Vector2(-18 + worker * 18, 28 + sin(progress * 35.0 + worker) * 3.0)
-			draw_circle(worker_pos + Vector2(0, -7), 5, Color("#f0c99d"))
-			draw_rect(Rect2(worker_pos, Vector2(8, 10)), Color("#4c7f65"))
 
 
 func _draw_warning_overlay() -> void:
@@ -2053,11 +2300,11 @@ func _draw_sky_map_content() -> void:
 		if warning_system_unlocked:
 			map_ink.draw_line(map_position, _world_to_map(zone.pos + zone.velocity * 60.0), Color(zone.edge, 0.35), 1.0)
 	for target in targets:
-		if bool(target.active) and not target.has("island"):
+		if bool(target.active) and not target.has("island") and _radar_visible(target.pos):
 			map_ink.draw_rect(Rect2(_world_to_map(target.pos) - Vector2(2, 2), Vector2(4, 4)), Color("#e5c78b"))
 	for hazard_value in hazards:
 		var hazard: Dictionary = hazard_value
-		if not bool(hazard.active) or hazard.pos.distance_to(island_pos) > development.radar_range():
+		if not bool(hazard.active) or not _radar_visible(hazard.pos):
 			continue
 		var map_position := _world_to_map(hazard.pos)
 		var center: Vector2 = IslandTiles.bounds(hazard.tiles).get_center() * MAP_SCALE
@@ -2068,6 +2315,7 @@ func _draw_sky_map_content() -> void:
 		if int(hazard.get("size_class", 0)) > 0:
 			var radius := 10.0 + 4.0 * int(hazard.get("size_class", 0))
 			map_ink.draw_circle(map_position, radius, Color.WHITE, false, 1.5)
+	_draw_radar_fog()
 	var island_map_position := MAP_RECT.get_center()
 	for tile in island_tiles:
 		var rect := IslandTiles.cell_rect(island_map_position, tile.cell, IslandTiles.CELL_SIZE * MAP_SCALE)
@@ -2103,4 +2351,18 @@ func _ellipse_points(center: Vector2, radius: Vector2, steps: int) -> PackedVect
 
 func _world_visible(world_position: Vector2, margin: float) -> bool:
 	return Rect2(-Vector2.ONE * margin * camera_zoom, VIEW_SIZE + Vector2.ONE * margin * camera_zoom * 2.0).has_point(_world_to_screen(world_position))
+
+
+func _radar_visible(world_position: Vector2) -> bool:
+	return world_position.distance_to(island_pos) <= development.radar_range()
+
+
+func _draw_radar_fog() -> void:
+	var center := MAP_RECT.get_center()
+	var radius: float = development.radar_range() * MAP_SCALE
+	for segment in range(96):
+		var a := Vector2.from_angle(TAU * segment / 96.0)
+		var b := Vector2.from_angle(TAU * (segment + 1) / 96.0)
+		map_ink.draw_colored_polygon(PackedVector2Array([center + a * radius, center + a * 3000.0, center + b * 3000.0, center + b * radius]), Color("#162733"))
+	map_ink.draw_arc(center, radius, 0, TAU, 96, Color("#9ac9c2"), 1.5)
 

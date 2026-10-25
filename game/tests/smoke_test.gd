@@ -40,11 +40,12 @@ func _run() -> void:
 	game.hazards = []
 
 	# Plant, mature, and harvest one crop.
-	var initial_seeds: int = game.seeds
+	var initial_seeds: int = game.rice_seeds
+	var tomato_seeds_before: int = game.tomato_seeds
 	var plot_center: Vector2 = game._plot_rect(0).get_center()
 	game._select_tool(game.TOOL_SEED)
 	game._interact_with_plot(plot_center)
-	_expect(game.seeds == initial_seeds - 1, "planting consumes one seed")
+	_expect(game.rice_seeds == initial_seeds - 1 and game.tomato_seeds == tomato_seeds_before, "planting rice consumes only a rice seed")
 	_expect(int(game.plots[0].state) == 1, "planted crop enters growing state")
 	_expect(game.selected_plot == 0, "clicking a farm tile keeps its local UI selected")
 	game._set_plot_context(0)
@@ -102,6 +103,7 @@ func _run() -> void:
 	_expect(is_equal_approx(game.energy, 100.0), "idle island does not regenerate energy")
 	game.energy = 0.0
 	_expect(game.development.research("bioenergy") and game.development.research("automatic") and game.development.build(Vector2i(1, -2), "energy"), "crop conversion requires an energy factory")
+	game.development.select_fuel("rice")
 	game._refuel_from_crops()
 	_expect(is_equal_approx(game.energy, 8.0), "level-one crop energy converts rice at the researched rate")
 
