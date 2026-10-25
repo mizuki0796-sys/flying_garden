@@ -1,0 +1,15 @@
+{
+  "terrain/farm_tile_concept_v1.png": "54c075444343be6c08d318c8f2cb6f60bf2ce9bba70b00833e812d03b418d058",
+  "terrain/gold_tile_concept_v1.png": "c8ca96156711db19c50b7c40a5d12aa3db7aa73891bef8a1b3621ac692c91852",
+  "terrain/grass_tile_concept_v1.png": "47b61805d66d91b988604fa1768a2cdb4247acb2c42d5e54fa7ea7b0e44c0aaa",
+  "terrain/lava_tile_concept_v1.png": "d732932a92b081860a2f828b3904e70bc1824612459a4c007477322e99cdd98b",
+  "terrain/rock_tile_concept_v1.png": "3bc502bac2f59797c35ddde70779b49dfbcdeb8bce2fe094d9b0bc9cc9aa0b43",
+  "terrain/sand_tile_concept_v1.png": "0016d7c4abccd919f21ee5e11f921f4d82a9a568e5012afee7878ed928659c26",
+  "terrain/tree_tile_concept_v2_large.png": "752d9e0c72d113ad3a9fc82119387dbc15448e7810dcc3961a10083a61065762",
+  "crops/rice_growth_5stage_v2.png": "a66d205bc4943c35bf5aa1e4ec273655a2401d85906c1680872851d188a5f9e5",
+  "crops/tomato_growth_5stage_v2.png": "570ee2680fa7447d84463ffa702d40551a6d4d386b38a7bd2f99a181a42952a1",
+  "facilities/energy_storage_room_v2.png": "7de87241b86973403ea2430f9174b6fc7dcb88dbeb424bd888878484d21c8fed",
+  "facilities/engine_room_v2.png": "7c9d2499ee2e6796260c1bd5177f71bc952474186e7abd2fc897e9fc5cd99903",
+  "facilities/grapple_workshop_v2.png": "29da8c56f5782a9624045c64864bda3a17efbcbf6174c96f74c3ed7ea0a7dcf5",
+  "characters/world_scale_reference_v1.png": "4f0066a95a9833dac94ff48f0ddbbf6cf5bcb094fe5f8a5716975aae56611de7"
+}
