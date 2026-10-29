@@ -75,7 +75,7 @@ func _run() -> void:
 	var magma_before: int = dev.materials.magma
 	dev.select_fuel("magma")
 	game._refuel_from_crops()
-	check(game.energy == 60.0 and dev.materials.magma == magma_before - 1, "magma is consumed as high-value fuel")
+	check(game.energy == 120.0 and dev.materials.magma == magma_before - 1, "magma is consumed as high-value fuel")
 	dev.materials.magma = 0
 	game.energy_crop_stock = 1
 	game.energy = 0.0
@@ -174,9 +174,8 @@ func _run() -> void:
 	check(not dev.can_trim(Vector2i(1, 0)) and dev.can_trim(Vector2i(2, 0)), "clipping keeps all remaining tiles connected")
 	# The actual menu can open and build all rows without deferred callback failures.
 	dev.toggle(true)
-	var tech_body: HBoxContainer = dev.content.get_child(2)
-	var tech_graph: Control = tech_body.get_child(0)
-	check(dev.modal.visible and tech_graph.get_child_count() >= Rules.TECH_ORDER.size() * 2, "visual technology tree renders icon nodes and progress bars")
+	var tech_tree = dev.content.get_node("TechnologyTree")
+	check(dev.modal.visible and tech_tree.nodes.size() == 7, "technology menu renders the selected category with icon nodes")
 	dev.toggle(false)
 	check(dev.modal.visible and not dev.tech_open, "development menu renders all actions")
 	dev.modal.hide()

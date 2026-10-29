@@ -20,15 +20,20 @@ var content: VBoxContainer
 var tech_open := false
 var selected_crop := 0
 var selected_tech := "engine"
+var selected_tech_group := 0
 var energy_cycle_left := 12.0
 var farm_cycle_left := Rules.FARM_CYCLE_SECONDS
+var explorer_open := false
 var trade_open := false
 var trade_source := ""
 var market_ui
 var tile_menu
+var layout
+var layout_open := false
 
 func _init(owner_node) -> void:
 	game = owner_node
+	layout = preload("res://scripts/island_layout.gd").new(game)
 	for key in Rules.TECH:
 		tech[key] = 0
 
@@ -64,9 +69,8 @@ func message(text: String) -> void:
 	game._show_notice(text, 4.0)
 
 func tile_at(cell: Vector2i) -> Dictionary:
-	for tile in game.island_tiles:
-		if tile.cell == cell: return tile
-	return {}
+	if not is_same(game.indexed_tiles, game.island_tiles) or game.tile_index.size() != game.island_tiles.size(): game._refresh_island_shape()
+	return game.tile_index.get(cell, {})
 
 func cell_at(world_position: Vector2) -> Vector2i:
 	var p: Vector2 = (world_position - game.island_pos) / Tiles.CELL_SIZE
@@ -94,7 +98,7 @@ func forest_protection(cell: Vector2i) -> float:
 	var protection := 0.0
 	for tile in game.island_tiles:
 		if tile.kind == "tree" and Vector2(tile.cell).distance_to(Vector2(cell)) <= Rules.FOREST_RADIUS:
-			protection = maxf(protection, Rules.FOREST_PROTECTION[int(tech.shelter)] * clampf(float(tile.get("hp", 100.0)) / 100.0, 0.0, 1.0))
+			protection = maxf(protection, Rules.FOREST_PROTECTION[int(tech.shelter)] * Rules.tile_health(tile) * game.land.tree_health(tile) * lerpf(0.25, 1.0, float(tile.get("tree_progress", 1.0))))
 	return protection
 
 func weather_damage_factor(cell: Vector2i) -> float:
@@ -104,26 +108,35 @@ func farm_radius(tile: Dictionary) -> int:
 	return Rules.FARM_RADII[clampi(int(tile.get("level", 1)), 1, 3)]
 
 func farm_manager(cell: Vector2i) -> Dictionary:
-	if int(tech.agri_automation) == 0: return {}
+	return farm_assignment(cell).manager
+
+func farm_assignment(cell: Vector2i) -> Dictionary:
+	var assignment := {"manager": {}, "coverage": 0, "crop": game.CROP_RICE}
+	if int(tech.agri_automation) == 0: return assignment
 	var nearest: Dictionary = {}
 	var distance := INF
 	for tile in game.island_tiles:
-		if str(tile.facility) != "farm_hut" or not bool(tile.get("farm_enabled", true)) or float(tile.get("hp", 100.0)) < 100.0: continue
+		if str(tile.facility) != "farm_hut" or not bool(tile.get("farm_enabled", true)) or Rules.tile_health(tile) < 1.0: continue
 		var candidate := Vector2(tile.cell).distance_to(Vector2(cell))
-		if candidate <= farm_radius(tile) and candidate < distance:
-			nearest = tile
-			distance = candidate
-	return nearest
+		if candidate <= farm_radius(tile):
+			assignment.coverage += 1
+			if candidate < distance:
+				nearest = tile
+				distance = candidate
+	assignment.manager = nearest
+	if assignment.coverage == 1: assignment.crop = int(nearest.get("farm_crop", game.CROP_RICE))
+	return assignment
 
 func manage_farms() -> int:
 	var count := 0
 	for index in range(game.plots.size()):
 		var plot: Dictionary = game.plots[index]
 		var farm := tile_at(plot.cell)
-		if farm.is_empty() or farm.kind != "farm" or str(farm.facility) != "" or float(farm.get("hp", 100.0)) < 100.0: continue
-		var hut := farm_manager(plot.cell)
-		if hut.is_empty(): continue
-		var crop := int(hut.get("farm_crop", 0))
+		if farm.is_empty() or farm.kind != "farm" or str(farm.facility) != "" or Rules.tile_health(farm) < 1.0: continue
+		var assignment := farm_assignment(plot.cell)
+		if assignment.manager.is_empty(): continue
+		# Each plot is worked once; overlapping active huts always sow rice.
+		var crop := int(assignment.crop)
 		if int(plot.state) == 2:
 			if game._work_plot(index, crop, true): count += 1
 		if int(plot.state) == 0 and game.seed_stock(crop) > 0:
@@ -150,7 +163,7 @@ func fuel_energy(source: String) -> int:
 		"rice": return crop_energy(game.CROP_RICE)
 		"tomato": return crop_energy(game.CROP_TOMATO)
 		"ore": return ore_energy()
-		"magma": return 60 if fuel_unlocked(source) else 0
+		"magma": return Rules.MAGMA_ENERGY if fuel_unlocked(source) else 0
 	return 0
 
 func select_fuel(source: String) -> bool:
@@ -217,7 +230,7 @@ func engine_power() -> float:
 	var output := 0.0
 	for tile in game.island_tiles:
 		if str(tile.facility) == "power":
-			output += (1.0 + 0.5 * (int(tile.get("level", 1)) - 1)) * maxf(0.25, float(tile.get("hp", 100.0)) / 100.0)
+			output += (1.0 + 0.5 * (int(tile.get("level", 1)) - 1)) * maxf(0.25, Rules.tile_health(tile))
 	return output * (1.0 + 0.3 * int(tech.engine))
 
 func efficiency() -> float:
@@ -266,11 +279,16 @@ func gather(cell: Vector2i) -> bool:
 	if int(tech.development) < required:
 		message("需要岛屿开拓 Lv.%d" % required)
 		return false
+	if tile.kind == "tree" and float(tile.get("tree_progress", 1.0)) < 1.0:
+		message("林木尚未成熟，等待成长后再采集")
+		return false
 	var yield_values: Dictionary = Rules.YIELDS[tile.kind]
 	var multiplier := 2 if int(tech.development) >= 3 else 1
 	for key in yield_values: add_stock(key, int(yield_values[key]) * multiplier)
 	message("采集%s：%s" % [Rules.TERRAIN_NAMES[tile.kind], Rules.cost_text(Rules.scaled_cost(yield_values, multiplier))])
 	tile.kind = "grass"
+	tile.erase("tree_progress")
+	tile.erase("tree_hp")
 	tile.depleted = true
 	game.gathered += 1
 	sync()
@@ -279,7 +297,7 @@ func gather(cell: Vector2i) -> bool:
 func build(cell: Vector2i, kind: String) -> bool:
 	var tile := tile_at(cell)
 	if tile.is_empty() or not Rules.BUILD_COSTS.has(kind): return false
-	if float(tile.get("hp", 100.0)) < 100.0:
+	if Rules.tile_health(tile) < 1.0:
 		message("请先修缮受损地块，再开垦或建造")
 		return false
 	if kind == "tree":
@@ -291,6 +309,8 @@ func build(cell: Vector2i, kind: String) -> bool:
 			return false
 		if not pay(Rules.BUILD_COSTS.tree): return false
 		tile.kind = "tree"
+		tile.tree_progress = 0.0
+		tile.tree_hp = Rules.tree_max_hp(tile)
 		tile.depleted = false
 		sync()
 		message("林木已种下；质量已计入浮岛")
@@ -298,15 +318,18 @@ func build(cell: Vector2i, kind: String) -> bool:
 	if str(tile.facility) != "" or tile.kind not in ["grass", "sand"]:
 		message("请选一格没有设施的草地或沙地；林木、矿石须先采集")
 		return false
-	var required: String = {"power": "engine", "water": "storage", "grapple": "hook", "energy": "automatic", "farm_hut": "agri_automation"}.get(kind, "")
+	var required: String = {"power": "engine", "water": "storage", "grapple": "hook", "energy": "automatic", "farm_hut": "agri_automation", "harbor": "harbor"}.get(kind, "")
 	if kind != "farm" and (required.is_empty() or int(tech[required]) < 1):
 		message("先在 T 科技树研究" + str(Rules.TECH[required].name))
 		return false
 	if kind == "power" and facility_count("power") >= int(tech.engine):
 		message("当前动力科技最多建造 %d 座引擎室" % int(tech.engine))
 		return false
-	if kind in ["grapple", "energy"] and has_facility(kind):
+	if kind in ["grapple", "energy", "harbor"] and has_facility(kind):
 		message("%s只能建造一座" % Rules.FACILITY_NAMES[kind])
+		return false
+	if kind == "harbor" and not game.land.is_edge(cell):
+		message("港口必须建在浮岛外围")
 		return false
 	if not pay(Rules.BUILD_COSTS[kind]): return false
 	if kind == "farm":
@@ -332,10 +355,10 @@ func upgrade(cell: Vector2i) -> bool:
 	if tile.is_empty() or str(tile.facility) == "":
 		message("请选择一座设施")
 		return false
-	if str(tile.facility) == "energy":
-		message("能源工厂效率由作物能源与矿物能源科技决定")
+	if str(tile.facility) in ["energy", "harbor"]:
+		message("港口无需升级" if tile.facility == "harbor" else "能源工厂效率由作物能源与矿物能源科技决定")
 		return false
-	var branch: String = {"power": "engine", "water": "storage", "grapple": "hook", "farm_hut": "agri_automation"}[tile.facility]
+	var branch: String = {"power": "engine", "water": "storage", "grapple": "hook", "farm_hut": "agri_automation", "harbor": "harbor"}[tile.facility]
 	var level := int(tile.get("level", 1))
 	var max_level := int(tech[branch]) if str(tile.facility) == "farm_hut" else int(tech[branch]) + 1
 	if level >= max_level:
@@ -357,6 +380,9 @@ func relocate(from: Vector2i, to: Vector2i) -> bool:
 	if str(source.facility) == "" or str(destination.facility) != "" or destination.kind not in ["grass", "sand"]:
 		message("选择有设施的起点，再选择空闲草地或沙地")
 		return false
+	if source.facility == "harbor" and (not game.land.is_edge(to) or game.explorer.state != "docked"):
+		message("港口只能在飞船停泊时搬到外围地块")
+		return false
 	if not pay({"coins": 5}): return false
 	destination.facility = source.facility
 	destination.level = source.get("level", 1)
@@ -364,7 +390,7 @@ func relocate(from: Vector2i, to: Vector2i) -> bool:
 		destination.farm_crop = source.get("farm_crop", 0)
 		destination.farm_enabled = source.get("farm_enabled", true)
 	# Damage follows the building; moving it is not a free repair.
-	destination.hp = minf(float(source.get("hp", 100.0)), float(destination.get("hp", 100.0)))
+	destination.hp = minf(float(source.get("hp", 100.0)), float(destination.get("hp", 100.0))) if Rules.tile_max_hp(source) == Rules.tile_max_hp(destination) else minf(Rules.tile_health(source), Rules.tile_health(destination)) * Rules.tile_max_hp(destination)
 	source.facility = ""
 	source.level = 1
 	sync()
@@ -398,6 +424,7 @@ func trim(cell: Vector2i) -> bool:
 	if not can_trim(cell):
 		message("不能抛弃核心、设施或会切断主岛的地块")
 		return false
+	if not pay(Rules.TRIM_COST): return false
 	var index := plot_at(cell)
 	if index >= 0: game.plots.remove_at(index)
 	game.island_tiles.erase(tile_at(cell))
@@ -408,7 +435,8 @@ func trim(cell: Vector2i) -> bool:
 func repair_cost(cell: Vector2i) -> Dictionary:
 	var tile := tile_at(cell)
 	if tile.is_empty(): return {}
-	var damage := clampf(1.0 - float(tile.get("hp", 100.0)) / 100.0, 0.0, 1.0)
+	var damage := 1.0 - Rules.tile_health(tile)
+	if tile.kind == "tree": damage = maxf(damage, 1.0 - game.land.tree_health(tile))
 	if damage <= 0.0: return {}
 	var facility := str(tile.get("facility", ""))
 	if facility.is_empty() and tile.kind == "farm":
@@ -422,13 +450,14 @@ func repair_cost(cell: Vector2i) -> Dictionary:
 
 func repair(cell: Vector2i) -> bool:
 	var tile := tile_at(cell)
-	if tile.is_empty() or float(tile.get("hp", 100.0)) >= 100.0:
+	if tile.is_empty() or repair_cost(cell).is_empty():
 		message("这格无需修缮")
 		return false
 	if not pay(repair_cost(cell)): return false
-	tile.hp = 100.0
+	tile.hp = Rules.tile_max_hp(tile)
+	if tile.kind == "tree": tile.tree_hp = Rules.tree_max_hp(tile)
 	sync()
-	message("修缮完成，耐久恢复 100；设施与农田效率恢复")
+	message("修缮完成，地块与林木生命恢复至当前上限")
 	return true
 
 func restore_farmland(cell: Vector2i) -> bool:
@@ -445,7 +474,7 @@ func restore_farmland(cell: Vector2i) -> bool:
 	game.selected_plot = -1
 	game.hovered_plot = -1
 	tile.kind = "grass"
-	tile.hp = 100.0
+	tile.hp = Rules.tile_max_hp(tile)
 	tile.depleted = true
 	sync()
 	message("农田已整平为普通土地，可建造房屋或重新开垦")
@@ -455,11 +484,12 @@ func damage_cell(cell: Vector2i, amount: float, reason := "受损", destroy_crop
 	var tile := tile_at(cell)
 	if tile.is_empty(): return false
 	tile.hp = maxf(0.0, float(tile.get("hp", 100.0)) - amount)
+	if tile.kind == "tree": game.land.damage_tree(tile, amount)
 	var plot_index := plot_at(cell)
 	if destroy_crop and plot_index >= 0 and int(game.plots[plot_index].state) != 0:
 		game.plots[plot_index].state = 0
 		game.plots[plot_index].progress = 0.0
-	message("%s：%s耐久 %d/100；农田受损时作物会损失" % [reason, Rules.TERRAIN_NAMES[tile.kind], tile.hp])
+	message("%s：%s耐久 %d/%d" % [reason, Rules.TERRAIN_NAMES[tile.kind], tile.hp, Rules.tile_max_hp(tile)])
 	return true
 
 func damage_at(world_position: Vector2, speed: float) -> void:
@@ -499,15 +529,14 @@ func collision_at(world_position: Vector2, speed: float, other_mass: float) -> i
 	var catastrophic: bool = (ratio >= 3.0 and maxf(game.island_mass, other_mass) >= 35.0) or (game.island_mass >= 45.0 and other_mass >= 45.0)
 	var destroy_count: int = 3 if catastrophic and speed >= 70.0 else (2 if catastrophic or speed >= 105.0 else 1)
 	var removed := 0
-	for entry in ordered:
-		if removed >= destroy_count:
-			break
-		if destroy_tile(entry.tile.cell):
-			removed += 1
-	for entry in ordered:
-		if removed >= destroy_count and not tile_at(entry.tile.cell).is_empty():
-			damage_cell(entry.tile.cell, clampf(speed * 0.35 + other_mass * 0.25, 10.0, 70.0), "撞击波及")
-			break
+	for index in range(mini(destroy_count, ordered.size())):
+		var tile: Dictionary = ordered[index].tile
+		if int(tile.get("reinforcement", 0)) > 0:
+			damage_cell(tile.cell, speed * 0.9 + other_mass * 0.4, "加固地块抵挡撞击")
+			if float(tile.hp) > 0.0: continue
+		if destroy_tile(tile.cell): removed += 1
+	if ordered.size() > destroy_count:
+		damage_cell(ordered[destroy_count].tile.cell, clampf(speed * 0.35 + other_mass * 0.25, 10.0, 70.0), "撞击波及")
 	sync()
 	message("猛烈撞击：崩落 %d 格%s" % [removed, "，质量差导致局部连锁坍塌" if catastrophic else ""])
 	game.screen_shake_time = 0.3
@@ -538,7 +567,9 @@ func survey(target: Dictionary) -> bool:
 func update(delta := 0.0) -> void:
 	if tile_menu != null: tile_menu.update()
 	if market_ui != null: market_ui.update()
-	if energy_open and is_instance_valid(energy_status_label): energy_status_label.text = fuel_status()
+	if energy_open and is_instance_valid(energy_status_label):
+		energy_status_label.text = _energy_status()
+		energy_status_label.tooltip_text = fuel_status()
 	if delta > 0.0:
 		energy_cycle_left -= delta
 		while energy_cycle_left <= 0.0:
@@ -577,6 +608,8 @@ func merchant_state_changed() -> void:
 	if market_ui != null: market_ui.update()
 
 func close_menu() -> void:
+	layout_open = false
+	explorer_open = false
 	trade_open = false
 	energy_open = false
 	trade_source = ""
@@ -643,7 +676,7 @@ func select_action(value: String) -> void:
 	close_menu()
 	game.selected_tool = 2
 	game._update_tool_styles()
-	message("%s：点击地块；右键/Esc 取消。" % {"gather": "采集", "farm": "开垦", "tree": "种树", "power": "建引擎", "water": "建储能", "grapple": "建抓钩", "energy": "建能源厂", "farm_hut": "建管理小屋", "upgrade": "升级设施", "move": "搬迁", "repair": "修缮", "restore": "农田整平", "trim": "剪裁", "survey": "勘探"}[action])
+	message("%s：点击地块；右键/Esc 取消。" % {"gather": "采集", "farm": "开垦", "tree": "种树", "power": "建引擎", "water": "建储能", "grapple": "建抓钩", "energy": "建能源厂", "farm_hut": "建管理小屋", "harbor": "建港口", "reinforce": "加固地块", "recycle": "回收地块", "upgrade": "升级设施", "move": "搬迁", "repair": "修缮", "restore": "农田整平", "trim": "剪裁", "survey": "勘探"}[action])
 
 func click(world_position: Vector2) -> void:
 	if action == "survey":
@@ -663,7 +696,15 @@ func click(world_position: Vector2) -> void:
 		return
 	match action:
 		"gather": gather(cell)
-		"farm", "tree", "power", "water", "grapple", "energy", "farm_hut": build(cell, action)
+		"farm", "tree", "power", "water", "grapple", "energy", "farm_hut", "harbor": build(cell, action)
+		"reinforce": game.land.reinforce(cell)
+		"recycle":
+			if trim_pending == cell:
+				game.land.recycle(cell)
+				trim_pending = NONE
+			else:
+				trim_pending = cell
+				message("再次点击确认回收；返还：" + Rules.cost_text(game.land.refund(cell)))
 		"upgrade": upgrade(cell)
 		"repair": repair(cell)
 		"restore": restore_farmland(cell)
@@ -703,18 +744,22 @@ func create_ui(root: Control) -> void:
 
 func toggle(show_tech: bool) -> void:
 	if tile_menu != null: tile_menu.close()
-	if modal.visible and not trade_open and not energy_open and tech_open == show_tech:
+	if modal.visible and not trade_open and not energy_open and not explorer_open and not layout_open and tech_open == show_tech:
 		close_menu()
 		return
 	trade_open = false
 	energy_open = false
 	trade_source = ""
+	explorer_open = false
+	layout_open = false
 	tech_open = show_tech
 	game.sky_map_open = false
 	render_menu()
 	modal.show()
 
 func toggle_energy() -> void:
+	layout_open = false
+	explorer_open = false
 	if modal.visible and energy_open:
 		close_menu()
 		return
@@ -726,29 +771,112 @@ func toggle_energy() -> void:
 	render_menu()
 	modal.show()
 
+# Compact energy controls; all conversion values come from the balance table.
+func _energy_label(value: String, font_size := 14) -> Label:
+	var label := Label.new()
+	label.text = value
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", game.INK)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return label
+
+func _energy_mark(kind: String) -> Control:
+	var mark := Control.new()
+	mark.custom_minimum_size = Vector2(20, 20)
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mark.draw.connect(func() -> void:
+		var ink: Color = game.INK
+		match kind:
+			"lock":
+				mark.draw_rect(Rect2(4, 9, 12, 9), ink, false, 2)
+				mark.draw_arc(Vector2(10, 9), 4, PI, TAU, 12, ink, 2)
+			"stop": mark.draw_rect(Rect2(5, 5, 10, 10), ink)
+			"close":
+				mark.draw_line(Vector2(5, 5), Vector2(15, 15), ink, 2)
+				mark.draw_line(Vector2(15, 5), Vector2(5, 15), ink, 2)
+			"clock":
+				mark.draw_arc(Vector2(10, 10), 7, 0, TAU, 24, ink, 1.5)
+				mark.draw_polyline(PackedVector2Array([Vector2(10, 5), Vector2(10, 10), Vector2(14, 10)]), ink, 1.5)
+			_:
+				mark.draw_arc(Vector2(10, 10), 6, 0, TAU, 24, ink, 1.5)
+				if kind == "selected": mark.draw_circle(Vector2(10, 10), 3, ink)
+	)
+	return mark
+
+func _energy_action(kind: String, hint: String, callback: Callable) -> Button:
+	var button: Button = game._make_small_button("")
+	button.custom_minimum_size = Vector2(32, 30)
+	button.tooltip_text = hint
+	button.pressed.connect(callback)
+	var mark := _energy_mark(kind)
+	button.add_child(mark)
+	mark.set_anchors_preset(Control.PRESET_CENTER)
+	mark.offset_left = -10
+	mark.offset_top = -10
+	mark.offset_right = 10
+	mark.offset_bottom = 10
+	return button
+
 func render_energy() -> void:
-	modal.position = Vector2(276, 112)
-	modal.size = Vector2(600, 420)
-	var title := Label.new()
-	title.text = "能源来源"
-	title.add_theme_font_size_override("font_size", 22)
-	title.add_theme_color_override("font_color", game.INK)
-	content.add_child(title)
-	energy_status_label = Label.new()
-	energy_status_label.text = fuel_status()
-	energy_status_label.add_theme_color_override("font_color", game.INK)
-	content.add_child(energy_status_label)
-	var hint := Label.new()
-	hint.text = "每 12 秒消耗 1 份所选来源；满能或缺料时暂停。\n能量下降或补货后继续；不会改用其他库存。"
-	hint.add_theme_font_size_override("font_size", 14)
-	hint.add_theme_color_override("font_color", game.INK)
-	content.add_child(hint)
-	for source in Rules.FUEL_NAMES:
-		var caption := ("● " if fuel_source == source else "○ ") + str(Rules.FUEL_NAMES[source])
-		if source != "": caption += " · %d 份 · %d E/份" % [fuel_stock(source), fuel_energy(source)]
-		if not fuel_unlocked(source): caption += " · 需对应能源科技"
-		button_row(caption, select_fuel.bind(source), not fuel_unlocked(source))
-	button_row("关闭 · Esc", close_menu)
+	modal.position = Vector2(8, 90)
+	modal.size = Vector2(326, 298)
+	var header := HBoxContainer.new()
+	content.add_child(header)
+	header.add_child(game._hud_texture("energy", 24))
+	var title := _energy_label("能源", 18)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+	header.add_child(_energy_action("close", "关闭 · Esc", close_menu))
+	var base_yields := {"rice": Rules.RICE_ENERGY_BY_LEVEL[1], "tomato": Rules.ENERGY_CROP_ENERGY_BY_LEVEL[1], "ore": Rules.ORE_ENERGY_BY_LEVEL[1], "magma": Rules.MAGMA_ENERGY}
+	for source in ["rice", "tomato", "ore", "magma"]:
+		var unlocked := fuel_unlocked(source)
+		var selected: bool = fuel_source == source
+		var value: int = fuel_energy(source) if unlocked else int(base_yields[source])
+		var button: Button = game._make_small_button("")
+		button.name = "EnergySource_" + source
+		button.custom_minimum_size = Vector2(0, 42)
+		button.disabled = not unlocked
+		button.tooltip_text = "%s · 库存 %d 份\n%s每份转化 %d E\n每 %.0f 秒消耗 1 份；满能或缺料暂停，不自动换源。" % [Rules.FUEL_NAMES[source], fuel_stock(source), "" if unlocked else "研究对应科技后，基础", value, Rules.FUEL_CYCLE_SECONDS]
+		button.add_theme_stylebox_override("normal", game._button_style(Color("#c3d9a6") if selected else Color("#f5e9cb"), Color("#527443") if selected else Color("#baab87")))
+		button.add_theme_stylebox_override("disabled", game._button_style(Color("#e4decc"), Color("#b9b29c")))
+		button.pressed.connect(select_fuel.bind(source))
+		content.add_child(button)
+		var row := HBoxContainer.new()
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		button.add_child(row)
+		row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		row.offset_left = 10
+		row.offset_right = -10
+		row.add_theme_constant_override("separation", 8)
+		var icon: TextureRect = game._hud_texture(source, 28)
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(icon)
+		var rate := _energy_label("%d E/份" % value, 16)
+		rate.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(rate)
+		row.add_child(_energy_label("×%d" % fuel_stock(source), 13))
+		row.add_child(_energy_mark("lock" if not unlocked else ("selected" if selected else "radio")))
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", 8)
+	content.add_child(footer)
+	var stop := _energy_action("stop", "停止补能 / 不选择来源", select_fuel.bind(""))
+	if fuel_source == "": stop.add_theme_stylebox_override("normal", game._button_style(Color("#c3d9a6"), Color("#527443")))
+	footer.add_child(stop)
+	energy_status_label = _energy_label(_energy_status(), 12)
+	energy_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	energy_status_label.mouse_filter = Control.MOUSE_FILTER_PASS
+	energy_status_label.tooltip_text = fuel_status()
+	footer.add_child(energy_status_label)
+	footer.add_child(_energy_mark("clock"))
+	footer.add_child(_energy_label("%.0f s" % Rules.FUEL_CYCLE_SECONDS, 13))
+
+func _energy_status() -> String:
+	if fuel_source == "": return "已停止"
+	if not has_facility("energy") or int(tech.automatic) == 0: return "需能源工厂"
+	if game.energy >= game.energy_capacity - 0.01: return "已满 · 暂停"
+	if fuel_stock(fuel_source) == 0: return "缺料 · 暂停"
+	return "补能中"
 
 func text_row(text: String, size := 14) -> void:
 	var label := Label.new()
@@ -756,7 +884,7 @@ func text_row(text: String, size := 14) -> void:
 	label.add_theme_font_size_override("font_size", size)
 	label.add_theme_color_override("font_color", game.INK)
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	label.custom_minimum_size.x = 940
+	label.custom_minimum_size.x = 940 if tech_open or layout_open else 310
 	content.add_child(label)
 
 func button_row(text: String, callback: Callable, disabled := false) -> void:
@@ -780,69 +908,12 @@ func _tech_blocked(key: String) -> bool:
 	return false
 
 func render_tech_tree() -> void:
-	var body := HBoxContainer.new()
-	body.add_theme_constant_override("separation", 14)
-	content.add_child(body)
-	var graph := Control.new()
-	graph.custom_minimum_size = Vector2(620, 424)
-	graph.draw.connect(func() -> void:
-		for key in Rules.TECH_ORDER:
-			for required in Rules.TECH[key].needs:
-				var start := _tech_position(required) + Vector2(154, 23)
-				var finish := _tech_position(key) + Vector2(0, 23)
-				graph.draw_line(start, finish, Color("#7f916d") if int(tech[required]) >= int(Rules.TECH[key].needs[required]) else Color("#b9aa91"), 3.0)
-	)
-	body.add_child(graph)
-	for key in Rules.TECH_ORDER:
-		var rule: Dictionary = Rules.TECH[key]
-		var button: Button = game._make_small_button("%s  %d/%d" % [rule.name, tech[key], rule.max])
-		button.position = _tech_position(key)
-		button.size = Vector2(154, 44)
-		button.icon = game._icon(int(rule.icon))
-		button.expand_icon = true
-		button.add_theme_constant_override("icon_max_width", 25)
-		button.tooltip_text = str(rule.effect)
-		if key == selected_tech:
-			button.add_theme_stylebox_override("normal", game._button_style(Color("#ffd875"), Color("#7c512f")))
-		button.pressed.connect(_select_tech.bind(key))
-		graph.add_child(button)
-		var progress := ProgressBar.new()
-		progress.position = _tech_position(key) + Vector2(4, 45)
-		progress.size = Vector2(146, 8)
-		progress.max_value = int(rule.max)
-		progress.value = int(tech[key])
-		progress.show_percentage = false
-		progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		graph.add_child(progress)
-	var detail := VBoxContainer.new()
-	detail.custom_minimum_size = Vector2(300, 410)
-	detail.add_theme_constant_override("separation", 12)
-	body.add_child(detail)
-	var rule: Dictionary = Rules.TECH[selected_tech]
-	var title := Label.new()
-	title.text = "%s　Lv.%d/%d" % [rule.name, tech[selected_tech], rule.max]
-	title.add_theme_font_size_override("font_size", 22)
-	title.add_theme_color_override("font_color", game.INK)
-	detail.add_child(title)
-	var description := Label.new()
-	var needs: PackedStringArray = []
-	for required in rule.needs:
-		needs.append("%s Lv.%d" % [Rules.TECH[required].name, rule.needs[required]])
-	var next_cost: Dictionary = research_cost(selected_tech)
-	description.text = "%s\n\n前置：%s\n\n下一级：%s\n\n研究消耗每级 ×%d（基础 ×1 / ×3 / ×9）" % [rule.effect, "无" if needs.is_empty() else " + ".join(needs), "已满级" if int(tech[selected_tech]) >= int(rule.max) else Rules.cost_text(next_cost), Rules.TECH_COST_GROWTH]
-	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	description.add_theme_font_size_override("font_size", 15)
-	description.add_theme_color_override("font_color", game.INK)
-	description.custom_minimum_size.y = 230
-	detail.add_child(description)
-	var research_button: Button = game._make_small_button("已满级" if int(tech[selected_tech]) >= int(rule.max) else "研究下一级")
-	research_button.custom_minimum_size = Vector2(280, 42)
-	research_button.disabled = int(tech[selected_tech]) >= int(rule.max) or _tech_blocked(selected_tech) or not can_pay(next_cost)
-	research_button.pressed.connect(func() -> void:
-		research(selected_tech)
-		render_menu())
-	detail.add_child(research_button)
-
+	modal.position = Vector2(78, 99)
+	modal.size = Vector2(990, 498)
+	var tree := preload("res://scripts/technology_tree_ui.gd").new()
+	tree.name = "TechnologyTree"
+	content.add_child(tree)
+	tree.setup(game, selected_tech_group)
 func _add_action(grid: GridContainer, label: String, action_key: String, disabled := false) -> void:
 	var button: Button = game._make_small_button(label)
 	button.custom_minimum_size = Vector2(300, 34)
@@ -854,22 +925,31 @@ func render_menu() -> void:
 	for child in content.get_children():
 		content.remove_child(child)
 		child.queue_free()
+	if explorer_open:
+		game.explorer.render(content)
+		return
 	if trade_open:
 		market_ui.render(content)
 		return
-	modal.position = Vector2(56, 96)
-	modal.size = Vector2(1040, 510)
+	modal.position = Vector2(8, 90)
+	modal.size = Vector2(1040 if tech_open or layout_open else 380, 510)
 	modal.add_theme_stylebox_override("panel", default_modal_style)
+	if layout_open:
+		layout.render(content)
+		return
 	if energy_open:
 		render_energy()
 		return
-	text_row("科技树" if tech_open else "岛屿开发", 21)
+	if tech_open:
+		render_tech_tree()
+		return
+	text_row("岛屿开发", 21)
 	text_row("金 %d　粮 %d　木 %d　石 %d　矿 %d　岩浆 %d　稻种 %d　番茄种 %d" % [game.coins, game.rice_stock, materials.wood, materials.stone, materials.ore, materials.magma, game.rice_seeds, game.tomato_seeds], 13)
 	if tech_open:
 		render_tech_tree()
 	else:
 		var grid := GridContainer.new()
-		grid.columns = 3
+		grid.columns = 1
 		grid.add_theme_constant_override("h_separation", 8)
 		grid.add_theme_constant_override("v_separation", 8)
 		content.add_child(grid)
@@ -881,6 +961,9 @@ func render_menu() -> void:
 		_add_action(grid, "建抓钩小屋 %d/1" % facility_count("grapple"), "grapple", int(tech.hook) == 0 or has_facility("grapple"))
 		_add_action(grid, "建能源工厂 %d/1" % facility_count("energy"), "energy", int(tech.automatic) == 0 or has_facility("energy"))
 		_add_action(grid, "建自动化管理小屋 · 半径 2 格", "farm_hut", int(tech.agri_automation) == 0)
+		_add_action(grid, "建探索港口（外围）", "harbor", int(tech.harbor) == 0 or has_facility("harbor"))
+		_add_action(grid, "加固地块 · 最多 15 次", "reinforce", int(tech.reinforcement) == 0)
+		_add_action(grid, "回收地块", "recycle", int(tech.recycling) == 0)
 		_add_action(grid, "升级设施", "upgrade")
 		_add_action(grid, "搬迁设施 · 5 金", "move")
 		_add_action(grid, "修缮 · 农田低价 / 地基高价", "repair")
@@ -888,6 +971,8 @@ func render_menu() -> void:
 		_add_action(grid, "剪裁地块", "trim", int(tech.terraform) == 0)
 		_add_action(grid, "勘探浮岛", "survey")
 		text_row("管理小屋每 6 秒播种、收获半径内农田；右键小屋可选择作物、暂停和升级。", 13)
+		button_row("探索飞船 · 港口管理", game.explorer.open_menu)
+		button_row("整岛剪裁 / 布局预设" + (" · 需研究整岛规划" if int(tech.layout) == 0 else " · 应用时消耗大量资源"), layout.open)
 		button_row(fuel_status() + " · 选择来源", toggle_energy)
 		if game.merchant_available:
 			button_row("流浪商人已到访 · 交易", open_trade.bind("流浪商人"))
@@ -897,8 +982,8 @@ func tile_description(cell: Vector2i) -> String:
 	var tile := tile_at(cell)
 	if tile.is_empty(): return ""
 	var facility := str(tile.facility)
-	var text := "%s%s · 耐久 %d/100\n" % [Rules.TERRAIN_NAMES[tile.kind], " / %s Lv.%d" % [Rules.FACILITY_NAMES[facility], tile.get("level", 1)] if facility != "" else "", tile.get("hp", 100.0)]
-	if float(tile.get("hp", 100.0)) < 100.0: text += "修缮：" + Rules.cost_text(repair_cost(cell)) + "\n"
+	var text := "%s%s · 耐久 %d/%d · 加固 %d/15\n" % [Rules.TERRAIN_NAMES[tile.kind], " / %s Lv.%d" % [Rules.FACILITY_NAMES[facility], tile.get("level", 1)] if facility != "" else "", tile.get("hp", 100.0), Rules.tile_max_hp(tile), tile.get("reinforcement", 0)]
+	if not repair_cost(cell).is_empty(): text += "修缮：" + Rules.cost_text(repair_cost(cell)) + "\n"
 	if facility == "power": text += "引擎叠加推力，升级增加单格动力；受损会降低输出。\n"
 	elif facility == "water": text += "每级提供 75 E 储量，再叠加储能科技。\n"
 	elif facility == "grapple": text += "发射点随建筑位置移动；科技和建筑升级扩大射程。\n"

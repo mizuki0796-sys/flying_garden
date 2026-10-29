@@ -31,6 +31,7 @@ func _run() -> void:
 	game.development.materials = {"wood": 1000, "stone": 1000, "ore": 1000, "magma": 10}
 	_test_energy(game)
 	_test_farms(game)
+	_test_overlap_crop(game)
 	_test_forest(game)
 	_test_camera(game)
 	_test_tree_hover()
@@ -146,6 +147,49 @@ func _test_farms(game) -> void:
 	check(dev.tile_at(Vector2i(3, 1)).level == 3 and not dev.tile_at(Vector2i(3, 1)).farm_enabled, "Relocation preserves hut level and management settings")
 	dev.tile_at(Vector2i(3, 1)).farm_enabled = true
 	check(dev.farm_manager(Vector2i(4, 0)).cell == Vector2i(3, 1), "Management radius follows the hut after relocation")
+
+func _test_overlap_crop(game) -> void:
+	var dev = game.development
+	var left := _tile(Vector2i(-1, 0), "grass", "farm_hut")
+	var right := _tile(Vector2i(1, 0), "grass", "farm_hut")
+	left.farm_crop = game.CROP_TOMATO
+	right.farm_crop = game.CROP_TOMATO
+	game.island_tiles = [left, right, _tile(Vector2i.ZERO, "farm"), _tile(Vector2i(3, 0), "farm")]
+	game.plots = [_plot(Vector2i.ZERO), _plot(Vector2i(3, 0))]
+	dev.sync()
+	game.rice_seeds = 5
+	game.tomato_seeds = 8
+	dev.manage_farms()
+	check(game.plots[0].crop_type == game.CROP_RICE and game.plots[1].crop_type == game.CROP_TOMATO, "Even two tomato huts sow rice in overlaps; singly covered land keeps tomato")
+	check(game.rice_seeds == 4 and game.tomato_seeds == 7, "Overlap sowing consumes one rice seed and never double-spends")
+	game.plots[0].crop_type = game.CROP_TOMATO
+	game.plots[0].progress = 0.5
+	dev.manage_farms()
+	check(game.plots[0].crop_type == game.CROP_TOMATO and game.plots[0].progress == 0.5, "Existing growing tomatoes are preserved in overlapping coverage")
+	game.plots[0].state = 2
+	game.plots[0].progress = 1.0
+	var harvested: int = game.harvested
+	var tomatoes: int = game.energy_crop_stock
+	dev.manage_farms()
+	check(game.harvested == harvested + 1 and game.energy_crop_stock == tomatoes + 1 and game.plots[0].crop_type == game.CROP_RICE, "Overlap harvests the actual crop once, then replants rice")
+	game.plots[0].state = 0
+	game.rice_seeds = 0
+	var tomato_seeds: int = game.tomato_seeds
+	dev.manage_farms()
+	check(game.plots[0].state == 0 and game.tomato_seeds == tomato_seeds, "Missing rice seeds pauses overlap planting rather than burning tomato seeds")
+	left.farm_enabled = false
+	dev.manage_farms()
+	check(game.plots[0].crop_type == game.CROP_TOMATO and game.plots[0].state == 1, "Paused huts do not force rice overlap priority")
+	game.plots[0].state = 0
+	left.farm_enabled = true
+	left.hp = 90.0
+	dev.manage_farms()
+	check(game.plots[0].crop_type == game.CROP_TOMATO and game.plots[0].state == 1, "Damaged huts do not force rice overlap priority")
+	left.hp = 100.0
+	game.plots[0].state = 0
+	game.rice_seeds = 1
+	dev.manage_farms()
+	check(game.plots[0].crop_type == game.CROP_RICE and game.rice_seeds == 0, "Repair and rice restocking restore overlapping rice sowing")
 
 func _test_forest(game) -> void:
 	var dev = game.development

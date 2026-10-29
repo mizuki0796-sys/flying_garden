@@ -18,8 +18,8 @@ func _init(owner_node) -> void:
 func create_badge(root: Control) -> void:
 	badge = Button.new()
 	badge.name = "MerchantArrivalPrompt"
-	badge.position = Vector2(392, 554)
-	badge.size = Vector2(368, 68)
+	badge.position = Vector2(8, 530)
+	badge.size = Vector2(144, 48)
 	badge.z_index = 5
 	badge.icon = game._hud_icon("coins")
 	badge.expand_icon = true
@@ -59,7 +59,7 @@ func select_mode(value: String) -> void:
 func _resize() -> void:
 	if not is_instance_valid(game) or not game.development.trade_open: return
 	var panel_size := Vector2(680, 350 if mode == "buy" else 282)
-	game.development.modal.position = (game.VIEW_SIZE - panel_size) * 0.5
+	game.development.modal.position = Vector2(8, 90)
 	game.development.modal.size = panel_size
 
 func _product(parent: Control, key: String, title: String, icons: Array, inventory: String, price: int, unit: String, wide := false) -> HBoxContainer:
@@ -183,13 +183,14 @@ func update() -> void:
 	var dev = game.development
 	var remaining := ceili(maxf(0.0, game.merchant_stay_left))
 	if is_instance_valid(badge):
-		badge.visible = game.demo_started and game.merchant_available and not dev.trade_open
-		var compact: bool = dev.modal != null and dev.modal.visible and not dev.energy_open
-		badge.text = ("商店已开张 · %ds · 点击交易  ›" if compact else "商店已开张 · 剩余 %ds\n点击购买 / 出售  ›") % remaining
-		badge.add_theme_font_size_override("font_size", 14 if compact else 18)
-		badge.add_theme_constant_override("icon_max_width", 20 if compact else 32)
-		badge.position = Vector2(392, 610 if compact else 554)
-		badge.size = Vector2(368, 32 if compact else 68)
+		badge.visible = game.demo_started and game.merchant_available and not dev.modal.visible and not dev.tile_menu.is_open() and not game.context_panel.visible and not game.guide_panel.visible
+		badge.text = ""
+		badge.tooltip_text = "商人到访 · 剩余 %d 秒 · 点击交易" % remaining
+		badge.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge.add_theme_font_size_override("font_size", 12)
+		badge.add_theme_constant_override("icon_max_width", 18)
+		badge.position = Vector2(8, game.tool_sidebar.position.y + game.tool_sidebar.size.y + 6)
+		badge.size = Vector2(64, 36)
 		var pulse := 0.95 + 0.05 * sin(game.animation_time * 4.0)
 		badge.modulate = Color(1.0, pulse, pulse, 1.0)
 	if not dev.trade_open or not is_instance_valid(status_label): return

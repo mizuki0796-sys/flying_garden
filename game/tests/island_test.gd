@@ -74,6 +74,8 @@ func _run() -> void:
 		_expect(reached.size() == cells.size(), "expanded island remains edge-connected")
 
 		# Streaming cannot duplicate attached terrain or lose a currently hooked load.
+		var starter_key: Vector2i = starter.island.world_key
+		var starter_index: int = starter.island.world_index
 		var second: Dictionary = {}
 		for target in game.targets:
 			if target.has("island") and bool(target.active):
@@ -93,7 +95,8 @@ func _run() -> void:
 		_expect(far_islands >= 1 and far_islands <= 6, "faraway regions retain the lower resource island density")
 		game.island_pos = game.world_origin
 		game._update_world_stream()
-		_expect(not bool(starter.active) and not bool(starter.island.active), "returning to a sector does not respawn merged islands")
+		var returned: Dictionary = game.world_sectors[starter_key].island_targets[starter_index]
+		_expect(not bool(returned.active) and not bool(returned.island.active), "returning to a sector does not respawn merged islands")
 
 	game.queue_free()
 	await process_frame

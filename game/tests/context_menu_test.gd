@@ -72,7 +72,7 @@ func _run() -> void:
 	menu.buttons.power.pressed.emit()
 	check(dev.tile_at(engine).facility == "power" and game.coins == coins_before - 40, "Building from the menu consumes the advertised resources")
 	_click(game, MOUSE_BUTTON_RIGHT, engine)
-	check(menu.buttons.keys() == ["upgrade", "repair", "move"], "Facilities expose only upgrade, repair and relocation")
+	check(menu.buttons.keys() == ["upgrade", "repair", "move", "reinforce"], "Facilities expose upgrade, repair, relocation and ground reinforcement")
 	check(menu.buttons.repair.disabled, "Undamaged facility cannot be repaired")
 	var quote: Dictionary = dev.upgrade_cost(engine)
 	coins_before = game.coins
