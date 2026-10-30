@@ -138,20 +138,20 @@ func _run() -> void:
 		braking_time += 0.05
 	_expect(braking_time >= 3.5 and braking_time <= 5.5, "passive braking stops the initial island in 3.5-5.5 seconds")
 
-	# Movement is unbounded and the camera mode yields immediately to driving input.
+	# Movement is unbounded; the regular view supports manual driving.
 	game.island_pos = game.world_origin + Vector2(4000.0, 0.0)
 	game.island_velocity = Vector2.RIGHT * 10.0
 	game._apply_movement(0.1, Vector2.ZERO, false)
 	_expect(game.island_pos.x > game.world_origin.x + 3900.0, "movement has no hard world boundary")
 	_expect(game.soft_boundary_active, "soft-boundary slowdown activates outside 150x150 tiles")
 	game.island_velocity = Vector2.ZERO
-	game._set_view_mode(game.VIEW_FOCUS)
+	game._set_view_mode(game.VIEW_GOD)
 	Input.action_press("move_right")
 	game._physics_process(0.1)
 	Input.action_release("move_right")
-	_expect(game.view_mode == game.VIEW_GOD, "driving from focus view switches to god view")
+	_expect(game.view_mode == game.VIEW_GOD, "manual driving remains in the regular view")
 
-	# A map destination starts autopilot, which moves and spends its extra energy budget.
+	# A map marker never starts a driver or spends propulsion energy.
 	game.island_pos = game.world_origin
 	game.island_velocity = Vector2.ZERO
 	game.energy = 150.0
@@ -162,8 +162,8 @@ func _run() -> void:
 	game._start_autopilot()
 	var energy_before_autopilot: float = game.energy
 	game._physics_process(0.5)
-	_expect(game.autopilot_active, "confirmed map destination starts autopilot")
-	_expect(game.island_velocity.length() > 0.0 and game.energy < energy_before_autopilot, "autopilot moves and consumes energy")
+	_expect(not game.autopilot_active, "map marker never starts autopilot")
+	_expect(game.island_velocity == Vector2.ZERO and game.energy == energy_before_autopilot, "marker alone neither moves nor consumes energy")
 	game._cancel_autopilot("test complete")
 
 	# Emergency braking charges energy and applies its crop-loss consequence.

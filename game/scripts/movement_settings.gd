@@ -24,8 +24,8 @@ class_name MovementSettings
 @export var energy_crop_energy := 35.0
 
 @export_category("Camera and navigation")
-@export var god_zoom_default := 0.55
-@export var god_zoom_min := 0.4
+@export var god_zoom_default := 0.75
+@export var god_zoom_min := 0.6
 @export var god_zoom_max := 1.0
 @export var focus_zoom_default := 1.4
 @export var focus_zoom_min := 1.0

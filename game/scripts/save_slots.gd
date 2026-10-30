@@ -171,6 +171,12 @@ func load_slot(slot: int) -> bool:
 	game.sector_pool.free_records.clear()
 	game.sector_pool.journal = packet.sectors.duplicate(true)
 	for key in FIELDS: game.set(key, packet.state[key])
+	# Old saves may contain an active route. Restore its marker, never its driver.
+	game._cancel_autopilot("手动驾驶")
+	game.view_mode = game.VIEW_GOD
+	game.navigation_view.clear_hover()
+	game.navigation_view.queue_redraw()
+	game.map_center = game.island_pos
 	game.island_tiles = packet.tiles.duplicate(true)
 	game.plots = packet.plots.duplicate(true)
 	game.development.tech = packet.tech.duplicate()

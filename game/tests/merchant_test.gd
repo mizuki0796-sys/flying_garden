@@ -130,7 +130,7 @@ func _run() -> void:
 	dev.toggle(false)
 	check(not dev.trade_open and dev.modal.visible, "Development menu replaces trading without keeping an active session")
 	await process_frame
-	check(dev.modal.size == Vector2(380, 510) and dev.modal.position.x == 8, "Deferred market layout cannot resize the left development drawer after switching")
+	check(dev.modal.size == Vector2(426, 510) and dev.modal.position.x == 8, "Deferred market layout cannot resize the three-column development drawer after switching")
 	dev.close_menu()
 	if DisplayServer.get_name() != "headless": await _capture(game)
 	game.queue_free()

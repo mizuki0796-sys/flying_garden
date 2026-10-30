@@ -914,13 +914,6 @@ func render_tech_tree() -> void:
 	tree.name = "TechnologyTree"
 	content.add_child(tree)
 	tree.setup(game, selected_tech_group)
-func _add_action(grid: GridContainer, label: String, action_key: String, disabled := false) -> void:
-	var button: Button = game._make_small_button(label)
-	button.custom_minimum_size = Vector2(300, 34)
-	button.disabled = disabled
-	button.pressed.connect(select_action.bind(action_key))
-	grid.add_child(button)
-
 func render_menu() -> void:
 	for child in content.get_children():
 		content.remove_child(child)
@@ -943,40 +936,7 @@ func render_menu() -> void:
 	if tech_open:
 		render_tech_tree()
 		return
-	text_row("岛屿开发", 21)
-	text_row("金 %d　粮 %d　木 %d　石 %d　矿 %d　岩浆 %d　稻种 %d　番茄种 %d" % [game.coins, game.rice_stock, materials.wood, materials.stone, materials.ore, materials.magma, game.rice_seeds, game.tomato_seeds], 13)
-	if tech_open:
-		render_tech_tree()
-	else:
-		var grid := GridContainer.new()
-		grid.columns = 1
-		grid.add_theme_constant_override("h_separation", 8)
-		grid.add_theme_constant_override("v_separation", 8)
-		content.add_child(grid)
-		_add_action(grid, "采集地形", "gather")
-		_add_action(grid, "开垦农田 · " + Rules.cost_text(Rules.BUILD_COSTS.farm), "farm")
-		_add_action(grid, "林木扦插 · " + Rules.cost_text(Rules.BUILD_COSTS.tree), "tree", int(tech.forestry) == 0)
-		_add_action(grid, "建引擎 %d/%d" % [facility_count("power"), int(tech.engine)], "power", int(tech.engine) == 0)
-		_add_action(grid, "建储能室", "water", int(tech.storage) == 0)
-		_add_action(grid, "建抓钩小屋 %d/1" % facility_count("grapple"), "grapple", int(tech.hook) == 0 or has_facility("grapple"))
-		_add_action(grid, "建能源工厂 %d/1" % facility_count("energy"), "energy", int(tech.automatic) == 0 or has_facility("energy"))
-		_add_action(grid, "建自动化管理小屋 · 半径 2 格", "farm_hut", int(tech.agri_automation) == 0)
-		_add_action(grid, "建探索港口（外围）", "harbor", int(tech.harbor) == 0 or has_facility("harbor"))
-		_add_action(grid, "加固地块 · 最多 15 次", "reinforce", int(tech.reinforcement) == 0)
-		_add_action(grid, "回收地块", "recycle", int(tech.recycling) == 0)
-		_add_action(grid, "升级设施", "upgrade")
-		_add_action(grid, "搬迁设施 · 5 金", "move")
-		_add_action(grid, "修缮 · 农田低价 / 地基高价", "repair")
-		_add_action(grid, "农田整平为土地 · 2 金", "restore")
-		_add_action(grid, "剪裁地块", "trim", int(tech.terraform) == 0)
-		_add_action(grid, "勘探浮岛", "survey")
-		text_row("管理小屋每 6 秒播种、收获半径内农田；右键小屋可选择作物、暂停和升级。", 13)
-		button_row("探索飞船 · 港口管理", game.explorer.open_menu)
-		button_row("整岛剪裁 / 布局预设" + (" · 需研究整岛规划" if int(tech.layout) == 0 else " · 应用时消耗大量资源"), layout.open)
-		button_row(fuel_status() + " · 选择来源", toggle_energy)
-		if game.merchant_available:
-			button_row("流浪商人已到访 · 交易", open_trade.bind("流浪商人"))
-	button_row("关闭 · Esc", close_menu)
+	preload("res://scripts/development_ui.gd").render(self)
 
 func tile_description(cell: Vector2i) -> String:
 	var tile := tile_at(cell)

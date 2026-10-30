@@ -63,7 +63,7 @@ func run() -> void:
 	game.development.toggle(false)
 	await process_frame
 	game._update_context_card()
-	check(game.development.modal.position.x == 8 and game.development.modal.size.x == 380 and not game.tool_sidebar.visible, "Development opens as left drawer")
+	check(game.development.modal.position.x == 8 and game.development.modal.size.x == 426 and not game.tool_sidebar.visible, "Development opens as left drawer")
 	await capture(game, "development")
 	game.development.close_menu()
 	game.development.tile_menu.open_at(Vector2i(1, 0))

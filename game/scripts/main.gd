@@ -28,7 +28,6 @@ const TOMATO_FRAMES := [Rect2(82, 0, 213, 724), Rect2(387, 0, 356, 724), Rect2(7
 const VIEW_GOD := 0
 const VIEW_FOCUS := 1
 const MAP_RECT := Rect2(118.0, 96.0, 916.0, 446.0)
-const MAP_SCALE := 0.16
 const WorldLayout = preload("res://scripts/world_layout.gd")
 const IslandTiles = preload("res://scripts/island_tiles.gd")
 const PixelTerrain = preload("res://scripts/pixel_terrain.gd")
@@ -48,6 +47,7 @@ var ordered_tiles: Array = []
 var optimized_rendering := true
 var crop_renderer = preload("res://scripts/crop_renderer.gd").new()
 var terrain_mesh_cache = preload("res://scripts/terrain_mesh_cache.gd").new()
+var nearby_terrain_cache: Dictionary = {}
 var hud_refresh_left := 0.0
 var weather_elapsed := 0.0
 var weather_refresh := 0.0
@@ -117,13 +117,16 @@ var view_transition_left := 0.0
 var middle_dragging := false
 var last_mouse_position := Vector2.ZERO
 
+var navigation_view
+var map_scale := 0.16
+var map_center := island_pos
 var sky_map_open := false
 var map_destination := Vector2.ZERO
 var map_destination_set := false
 var autopilot_active := false
 var autopilot_state := "待机"
 var autopilot_reason := ""
-var autopilot_unlocked := true
+var autopilot_unlocked := false
 var warning_system_unlocked := true
 var warning_direction := Vector2.ZERO
 var warning_distance := INF
@@ -184,7 +187,6 @@ var stats_row: HBoxContainer
 var context_panel: PanelContainer
 var map_clip: Control
 var map_ink: Node2D
-var view_button: Button
 var map_button: Button
 var fuel_button: Button
 var hook_button: Button
@@ -274,6 +276,7 @@ func _initialize_world() -> void:
 func _update_world_stream() -> void:
 	var sector := WorldLayout.sector_at(island_pos, world_origin)
 	if sector == active_sector: return
+	nearby_terrain_cache.clear()
 	var attached: Dictionary = targets[hooked_target] if hooked_target >= 0 and hooked_target < targets.size() else {}
 	var wanted: Dictionary = {}
 	for y in range(sector.y - WorldLayout.ACTIVE_RADIUS, sector.y + WorldLayout.ACTIVE_RADIUS + 1):
@@ -339,16 +342,22 @@ func _god_zoom_limit() -> float:
 	return minf(movement_settings.god_zoom_max, minf(880.0 / visual.size.x, 440.0 / visual.size.y))
 
 
+func _default_player_zoom() -> float:
+	return minf(movement_settings.god_zoom_default, _god_zoom_limit())
+
+
 func _clamp_god_camera() -> void:
 	var visual := _island_visual_bounds()
 	# Reserve space for the HUD, tools and visitor banner.
 	var safe := Rect2(156, 100, 968, 448)
 	var lower := island_pos + visual.end - (safe.end - VIEW_CENTER) / camera_zoom
 	var upper := island_pos + visual.position - (safe.position - VIEW_CENTER) / camera_zoom
-	camera_world = camera_world.clamp(lower, upper)
+	# At close range the island exceeds the safe frame; keep both bounds ordered.
+	camera_world = camera_world.clamp(lower.min(upper), lower.max(upper))
 
 
 func _physics_process(delta: float) -> void:
+	if navigation_view != null and navigation_view.paused(): return
 	if not demo_started or (saves != null and saves.is_open()):
 		return
 	# The visitor's departure clock also runs while browsing the market.
@@ -371,21 +380,12 @@ func _physics_process(delta: float) -> void:
 	warning_ping_cooldown = maxf(0.0, warning_ping_cooldown - delta)
 
 	var manual_direction := Input.get_vector("move_left", "move_right", "move_up", "move_down")
-	if sky_map_open:
-		manual_direction = Vector2.ZERO
 	if control_stun_time > 0.0:
 		manual_direction = Vector2.ZERO
-	if manual_direction.length_squared() > 0.01:
-		if autopilot_active:
-			_cancel_autopilot("玩家接管")
-		if view_mode == VIEW_FOCUS:
-			_set_view_mode(VIEW_GOD, "开始驾驶，已切换上帝视角")
 
 	_update_world_stream()
 	_update_warning()
 	var drive_direction := manual_direction
-	if autopilot_active:
-		drive_direction = _autopilot_direction()
 	_apply_movement(delta, drive_direction, drive_direction.length_squared() > 0.01)
 	_update_focus_pan(delta)
 	_update_camera(delta)
@@ -401,6 +401,9 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	if navigation_view != null:
+		navigation_view.update(delta)
+		if navigation_view.paused(): return
 	animation_time += delta
 	var kind := _weather_kind()
 	var target_wind: float = {"clear": 0.12, "sun": 0.10, "cloud": 0.20, "rain": 0.34, "snow": 0.25, "storm": 0.65, "cyclone": 1.6}[kind]
@@ -430,6 +433,9 @@ func _update_plot_hover() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if navigation_view != null and navigation_view.paused() and not saves.is_open():
+		navigation_view._input(event)
+		return
 	if saves.is_open():
 		if event.is_action_pressed("ui_cancel"): saves.close()
 		get_viewport().set_input_as_handled()
@@ -469,12 +475,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_update_context_card()
 		get_viewport().set_input_as_handled()
 		return
-	if event.is_action_pressed("toggle_view"):
-		_toggle_view()
-		get_viewport().set_input_as_handled()
-	elif event.is_action_pressed("toggle_map"):
-		sky_map_open = not sky_map_open
-		_show_notice("天空地图：点击设置目的地，回车确认启航。" if sky_map_open else "已关闭天空地图。")
+	if event.is_action_pressed("toggle_map"):
+		navigation_view.toggle_map()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("refuel"):
 		development.toggle_energy()
@@ -585,8 +587,6 @@ func _apply_movement(delta: float, direction: Vector2, wants_thrust: bool) -> vo
 	soft_boundary_active = absf(island_pos.x - world_origin.x) > boundary_distance or absf(island_pos.y - world_origin.y) > boundary_distance
 	var boundary_ratio: float = movement_settings.soft_boundary_speed_ratio if soft_boundary_active else 1.0
 	var speed_limit: float = _max_speed() * boundary_ratio
-	if autopilot_active:
-		speed_limit *= movement_settings.autopilot_cruise_ratio
 
 	var thrusting := wants_thrust and energy > 0.0 and not emergency_braking and _engine_thrust() > 0.0
 	if emergency_braking:
@@ -608,57 +608,17 @@ func _apply_movement(delta: float, direction: Vector2, wants_thrust: bool) -> vo
 		energy_rate += movement_settings.moving_energy_per_second
 	if thrusting:
 		energy_rate += movement_settings.thrust_energy_per_second
-	if autopilot_active:
-		energy_rate += movement_settings.autopilot_energy_per_second
 	if energy_rate > 0.0:
 		var requested := energy_rate * _mass_energy_ratio() * delta
 		var consumed := minf(energy, requested)
 		if consumed > 0.0:
-			_consume_energy(consumed, "自动驾驶" if autopilot_active else "浮岛推进")
+			_consume_energy(consumed, "浮岛推进")
 
 	island_pos += island_velocity * delta
 	if energy <= 0.0 and autopilot_active:
 		_cancel_autopilot("能源耗尽")
 	elif energy < movement_settings.autopilot_min_energy and autopilot_active:
 		_cancel_autopilot("能源低于 20 E")
-
-
-func _autopilot_direction() -> Vector2:
-	if not map_destination_set:
-		_cancel_autopilot("目的地丢失")
-		return Vector2.ZERO
-	var to_target := map_destination - island_pos
-	var distance := to_target.length()
-	if distance <= movement_settings.autopilot_arrival_radius and island_velocity.length() < 2.0:
-		island_velocity = Vector2.ZERO
-		_cancel_autopilot("已到达目的地")
-		return Vector2.ZERO
-	var desired := to_target.normalized()
-	var warning_radius: float = movement_settings.warning_radius_tiles * movement_settings.tile_size
-	for hazard_value in hazards:
-		var hazard: Dictionary = hazard_value
-		if not bool(hazard.active) or bool(hazard.tethered):
-			continue
-		var to_hazard: Vector2 = hazard.pos - island_pos
-		var clearance := _hazard_clearance(hazard)
-		if clearance <= warning_radius and desired.dot(to_hazard.normalized()) > 0.2:
-			if clearance < 28.0:
-				_set_autopilot_state("等待", "前方障碍过近")
-				return Vector2.ZERO
-			var away: Vector2 = hazard.pos.direction_to(island_pos)
-			var tangent := desired.orthogonal()
-			if tangent.dot(away) < 0.0:
-				tangent = -tangent
-			_set_autopilot_state("避障", "绕行荒岛")
-			return (desired + tangent * 1.35).normalized()
-
-	var brake_acceleration: float = _engine_thrust() / _effective_mass() * movement_settings.passive_brake_ratio
-	var braking_distance := island_velocity.length_squared() / maxf(1.0, 2.0 * brake_acceleration) + 18.0
-	if distance <= braking_distance:
-		_set_autopilot_state("减速", "接近目的地")
-		return Vector2.ZERO
-	_set_autopilot_state("巡航", "前往目的地")
-	return desired
 
 
 func _set_autopilot_state(state_value: String, reason: String) -> void:
@@ -670,23 +630,8 @@ func _set_autopilot_state(state_value: String, reason: String) -> void:
 
 
 func _start_autopilot() -> void:
-	if development.engine_power() <= 0.0:
-		_show_notice("没有引擎；先在科技树研究动力工程并建造引擎室。")
-		return
-	if not autopilot_unlocked:
-		_show_notice("需要天空地图、自动驾驶小屋和预警系统。")
-		return
-	if not map_destination_set:
-		_show_notice("请先在天空地图上点击目的地。")
-		return
-	if energy < movement_settings.autopilot_min_energy:
-		_warn_energy("自动驾驶至少需要 20 E")
-		return
-	autopilot_active = true
-	sky_map_open = false
-	_set_autopilot_state("巡航", "自动驾驶已启动")
-	_show_notice("自动驾驶已启动；WASD 或 Esc 可立即接管。")
-	_play_tone(660.0, 0.10, -10.0)
+	# Retained for old callers/saves; destinations now provide a manual bearing only.
+	_cancel_autopilot("自动导航已取消，请返回现实视角手动驾驶")
 
 
 func _cancel_autopilot(reason: String) -> void:
@@ -694,10 +639,6 @@ func _cancel_autopilot(reason: String) -> void:
 		return
 	autopilot_active = false
 	_set_autopilot_state("待机", reason)
-	if "能源" in reason:
-		_warn_energy(reason)
-	else:
-		_show_notice("自动驾驶中断：%s" % reason)
 
 func _has_collision_trend(hazard: Dictionary) -> bool:
 	var speed: float = island_velocity.length()
@@ -784,23 +725,13 @@ func _warn_energy(reason: String) -> void:
 		energy_label.tooltip_text = reason
 
 
-func _toggle_view() -> void:
-	if view_mode == VIEW_GOD:
-		if not autopilot_active and island_velocity.length() > 1.0:
-			_show_notice("手动驾驶需保持上帝视角。")
-			return
-		_set_view_mode(VIEW_FOCUS, "已进入微观视角；中键拖拽或靠近屏幕边缘平移。")
-	else:
-		_set_view_mode(VIEW_GOD, "已进入上帝视角。")
-
-
 func _set_view_mode(mode: int, notice: String = "") -> void:
 	if view_mode == mode:
 		return
 	view_mode = mode
 	view_transition_left = movement_settings.view_transition_time
 	if mode == VIEW_GOD:
-		camera_zoom_target = minf(movement_settings.god_zoom_default, _god_zoom_limit())
+		camera_zoom_target = _default_player_zoom()
 		camera_zoom = minf(camera_zoom, _god_zoom_limit())
 		_clamp_god_camera()
 	else:
@@ -816,8 +747,7 @@ func _set_view_mode(mode: int, notice: String = "") -> void:
 
 func _adjust_zoom(amount: float) -> void:
 	if view_mode == VIEW_GOD:
-		var limit := _god_zoom_limit()
-		camera_zoom_target = clampf(camera_zoom_target + amount, minf(movement_settings.god_zoom_min, limit * 0.25), limit)
+		camera_zoom_target = clampf(camera_zoom_target + amount, _default_player_zoom(), movement_settings.focus_zoom_max)
 	else:
 		camera_zoom_target = clampf(camera_zoom_target + amount, movement_settings.focus_zoom_min, movement_settings.focus_zoom_max)
 	view_transition_left = movement_settings.view_transition_time
@@ -825,8 +755,8 @@ func _adjust_zoom(amount: float) -> void:
 
 func _update_camera(delta: float) -> void:
 	if view_mode == VIEW_GOD:
-		camera_zoom_target = minf(camera_zoom_target, _god_zoom_limit())
-		camera_zoom = minf(camera_zoom, _god_zoom_limit())
+		camera_zoom_target = clampf(camera_zoom_target, _default_player_zoom(), movement_settings.focus_zoom_max)
+		camera_zoom = clampf(camera_zoom, _default_player_zoom(), movement_settings.focus_zoom_max)
 	view_transition_left = maxf(0.0, view_transition_left - delta)
 	var zoom_speed := maxf(0.01, absf(camera_zoom_target - camera_zoom) / maxf(0.05, movement_settings.view_transition_time))
 	camera_zoom = move_toward(camera_zoom, camera_zoom_target, zoom_speed * delta)
@@ -866,11 +796,12 @@ func _screen_to_world(screen_position: Vector2) -> Vector2:
 
 
 func _set_map_destination(screen_position: Vector2) -> void:
-	if not MAP_RECT.has_point(screen_position):
+	if not map_clip.get_global_rect().has_point(screen_position):
 		return
-	map_destination = island_pos + (screen_position - MAP_RECT.get_center()) / MAP_SCALE
+	map_destination = _map_to_world(screen_position)
 	map_destination_set = true
-	_show_notice("目的地已标记；按回车启航。")
+	map_ink.queue_redraw()
+	_show_notice("航向已标记；按 M 返回后手动驾驶。")
 
 
 func _play_tone(frequency: float, duration: float, volume_db: float) -> void:
@@ -1438,14 +1369,8 @@ func _build_hud() -> void:
 	navigation_buttons.columns = 1
 	navigation_buttons.add_theme_constant_override("separation", 2)
 	navigation_buttons.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	view_button = _make_icon_button("focus", "Tab / V · 微观视角")
-	view_button.pressed.connect(_toggle_view)
-	navigation_buttons.add_child(view_button)
 	map_button = _make_icon_button("map", "M · 天空地图")
-	map_button.pressed.connect(func() -> void:
-		sky_map_open = not sky_map_open
-		_show_notice("天空地图：点击目的地，回车启航。" if sky_map_open else "已关闭天空地图。")
-	)
+	map_button.pressed.connect(func() -> void: navigation_view.toggle_map())
 	navigation_buttons.add_child(map_button)
 	for entry in [["build", "B · 岛屿开发", false], ["tech", "T · 科技树", true]]:
 		var button := _make_icon_button(entry[0], entry[1])
@@ -1480,7 +1405,7 @@ func _build_hud() -> void:
 	)
 	guide_header.add_child(guide_toggle)
 	guide_body = Label.new()
-	guide_body.text = "WASD 驾驶　Space 急停　M 地图\nTab 视角　R 能源厂　B 开发 / T 科技\n左侧选工具 · 右键地块操作 · F5 存档\n指向未连接岛屿按 E 查看 · E/Esc 收起"
+	guide_body.text = "WASD 驾驶　Space 急停　M 地图\n滚轮缩放　R 能源厂　B 开发 / T 科技\n左侧选工具 · 右键地块操作 · F5 存档\n指向未连接岛屿按 E 查看 · E/Esc 收起"
 	guide_body.add_theme_font_size_override("font_size", 12)
 	guide_body.add_theme_color_override("font_color", Color("#624635"))
 	guide_body.visible = true
@@ -1586,6 +1511,8 @@ func _build_hud() -> void:
 	map_ink.draw.connect(_draw_sky_map_content)
 
 	development.create_ui(root)
+	navigation_view = preload("res://scripts/navigation_view.gd").new()
+	navigation_view.setup(self, root)
 	_build_intro(root)
 	saves.create_ui(root)
 	_update_tool_styles()
@@ -1679,7 +1606,7 @@ func _capture_preview(show_map := false, expand_island := false) -> void:
 		map_destination_set = true
 	_update_tool_styles()
 	if not expand_island:
-		_show_notice("天空地图：群岛、物资和天气分布；点击目的地后按 Enter 启航。" if show_map else "主岛由独立地块拼成。用抓钩拖回右上方的小岛，即可扩张。", 8.0)
+		_show_notice("天空地图：群岛、物资和天气分布；WASD 平移，点击标记后返回手动驾驶。" if show_map else "主岛由独立地块拼成。用抓钩拖回右上方的小岛，即可扩张。", 8.0)
 	for frame in range(4):
 		await get_tree().process_frame
 	if not show_map and selected_plot >= 0:
@@ -1909,7 +1836,7 @@ func _update_hud() -> void:
 	hud_refresh_left = 0.1
 	if money_label == null:
 		return
-	tool_sidebar.visible = demo_started and not sky_map_open and not development.modal.visible
+	tool_sidebar.visible = demo_started and not sky_map_open and not development.modal.visible and not navigation_view.paused()
 	money_label.text = str(coins)
 	energy_label.text = "%d/%d%s" % [int(energy), int(energy_capacity), " !" if energy < energy_capacity * 0.2 or energy_warning_left > 0.0 else ""]
 	energy_label.tooltip_text = energy_warning_text if energy_warning_left > 0.0 else development.fuel_status() + "；R 选择来源"
@@ -1968,11 +1895,10 @@ func _update_hud() -> void:
 		weather_risk.text = "+%d" % int(development.tech.forecast)
 		weather_risk.tooltip_text = "天气预报等级：强化天气增益、减轻天气损失"
 	navigation_buttons.tooltip_text = ""
-	view_button.modulate = Color("#ffda82") if view_mode == VIEW_FOCUS else Color.WHITE
 	map_button.modulate = Color("#ffda82") if sky_map_open else Color.WHITE
 	seed_button.text = ""
 	tomato_button.text = ""
-	for button in [view_button, map_button, seed_button, tomato_button, hook_button, fuel_button]:
+	for button in [map_button, seed_button, tomato_button, hook_button, fuel_button]:
 		button.tooltip_text = ""
 	hook_button.disabled = not development.has_facility("grapple")
 	fuel_button.disabled = false
@@ -2087,6 +2013,11 @@ func _show_notice(text_value: String, duration := 3.0) -> void:
 
 
 func _draw() -> void:
+	if sky_map_open:
+		material = null
+		_draw_sky()
+		if sky_map_open: _draw_sky_map()
+		return
 	if optimized_rendering:
 		crop_renderer.begin_frame(animation_time, wind_strength)
 		if material != crop_renderer.material: material = crop_renderer.material
@@ -2099,8 +2030,7 @@ func _draw() -> void:
 		shake = Vector2(sin(phase), cos(phase * 1.37)) * screen_shake_strength * (screen_shake_time / 0.3)
 	draw_set_transform(VIEW_CENTER + shake - camera_world * camera_zoom, 0.0, Vector2(camera_zoom, camera_zoom))
 	_draw_targets()
-	_draw_hazards()
-	_draw_island()
+	_draw_islands()
 	_draw_hook()
 	if explorer != null: explorer.draw_ship()
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -2108,6 +2038,7 @@ func _draw() -> void:
 	_draw_night_lights()
 	_draw_warning_overlay()
 	_draw_soft_boundary_overlay()
+	_draw_destination_bearing()
 	if sky_map_open:
 		_draw_sky_map()
 	if optimized_rendering: crop_renderer.end_frame()
@@ -2123,7 +2054,7 @@ func _draw_sky() -> void:
 		for star in range(60):
 			var point := Vector2(posmod(star * 179 + 27, 1152), posmod(star * 83 + 19, 530))
 			draw_circle(point, 1.2, Color(0.85, 0.95, 1.0, _night_strength() * (0.45 + 0.25 * sin(animation_time + star))))
-	var drift := fmod(Time.get_ticks_msec() * 0.012, VIEW_SIZE.x + 300.0) - 150.0
+	var drift := fmod(animation_time * 12.0, VIEW_SIZE.x + 300.0) - 150.0
 	_draw_cloud(Vector2(drift, 118), 0.8)
 	_draw_cloud(Vector2(fmod(drift + 520.0, VIEW_SIZE.x + 260.0) - 100.0, 235), 0.58)
 	_draw_cloud(Vector2(fmod(drift + 930.0, VIEW_SIZE.x + 300.0) - 120.0, 520), 0.72)
@@ -2160,16 +2091,42 @@ func _draw_targets() -> void:
 			draw_arc(position_value, 22, 0, TAU, 24, INK, 3.0)
 
 
-func _draw_hazards() -> void:
-	if view_mode == VIEW_FOCUS: return
-	for hazard in hazards:
+func _island_draw_order() -> Array[int]:
+	var ordered: Array[int] = [-1]
+	if view_mode == VIEW_FOCUS: return ordered
+	for index in range(hazards.size()):
+		var hazard: Dictionary = hazards[index]
 		if not bool(hazard.active) or not _radar_visible(hazard.pos) or not _world_visible(hazard.pos, 200.0):
 			continue
-		var p: Vector2 = hazard.pos
-		var bounds: Rect2 = IslandTiles.bounds(hazard.tiles)
+		ordered.append(index)
+	# Wild island positions are footprint centers; use the same anchor for the player.
+	var player_y := island_pos.y + island_bounds.get_center().y
+	ordered.sort_custom(func(a: int, b: int) -> bool:
+		var ay: float = player_y if a == -1 else hazards[a].pos.y
+		var by: float = player_y if b == -1 else hazards[b].pos.y
+		return a < b if ay == by else ay < by)
+	return ordered
+
+
+func _draw_islands() -> void:
+	for index in _island_draw_order():
+		if index == -1:
+			_draw_island()
+		else:
+			_draw_hazard(hazards[index])
+
+
+func _draw_hazard(hazard: Dictionary) -> void:
+	var p: Vector2 = hazard.pos
+	var bounds: Rect2 = IslandTiles.bounds(hazard.tiles)
+	if optimized_rendering:
+		var cache_key := "%s:%s" % [hazard.get("world_key", p), hazard.get("world_index", 0)]
+		if not nearby_terrain_cache.has(cache_key): nearby_terrain_cache[cache_key] = preload("res://scripts/terrain_mesh_cache.gd").new()
+		nearby_terrain_cache[cache_key].draw(self, p - bounds.get_center(), hazard.tiles, terrain_textures, IslandTiles)
+	else:
 		IslandTiles.draw_shadow(self, p - bounds.get_center(), hazard.tiles)
 		IslandTiles.draw_ground(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, terrain_textures)
-		IslandTiles.draw_decor(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, int(hazard.biome) == 1, tree_texture, true, animation_time, wind_strength, _tree_pointer())
+	IslandTiles.draw_decor(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, int(hazard.biome) == 1, tree_texture, true, animation_time, wind_strength, _tree_pointer())
 
 
 func _draw_island() -> void:
@@ -2444,8 +2401,12 @@ func _draw_weather_effects() -> void:
 		draw_polyline(PackedVector2Array([Vector2(x, 0), Vector2(x - 38, 64), Vector2(x + 12, 63), Vector2(x - 42, 147)]), Color(0.86, 0.9, 1.0, lightning_left / 0.18), 3.0)
 
 
+func _map_to_world(screen_position: Vector2) -> Vector2:
+	return map_center + (screen_position - MAP_RECT.get_center()) / map_scale
+
+
 func _world_to_map(world_position: Vector2) -> Vector2:
-	return MAP_RECT.get_center() + (world_position - island_pos) * MAP_SCALE
+	return MAP_RECT.get_center() + (world_position - map_center) * map_scale
 
 
 func _draw_sky_map() -> void:
@@ -2453,14 +2414,24 @@ func _draw_sky_map() -> void:
 	draw_rect(MAP_RECT, Color(0.08, 0.16, 0.22, 0.94))
 	draw_rect(MAP_RECT, Color("#b8e3e2"), false, 3.0)
 	var font := ThemeDB.fallback_font
-	draw_string(font, MAP_RECT.position + Vector2(20, 30), "天空地图 · 雷达 Lv.%d · 可见 %.1f 航区" % [int(development.tech.radar), development.radar_range() / WorldLayout.SECTOR_SIZE], HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color.WHITE)
-	draw_string(font, Vector2(MAP_RECT.position.x + 20, MAP_RECT.end.y - 14), "大轮廓代表稀有大型岛 · 紫色为商店岛 · 点击标记 / Enter 启航", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, Color("#d7edf1"))
+	draw_string(font, MAP_RECT.position + Vector2(20, 30), "天空地图 · 已暂停 · 雷达 Lv.%d · 缩放 %d%%" % [int(development.tech.radar), roundi(map_scale / 0.16 * 100)], HORIZONTAL_ALIGNMENT_LEFT, -1.0, 17, Color.WHITE)
+	draw_string(font, Vector2(MAP_RECT.position.x + 20, MAP_RECT.end.y - 14), "WASD 平移 · 滚轮缩放 · 点击标记 · 悬停查看 · 右键清除 · M / Esc 返回", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 13, Color("#d7edf1"))
+
+
+func _draw_destination_bearing() -> void:
+	if not map_destination_set or sky_map_open: return
+	var direction := island_pos.direction_to(map_destination)
+	var point := VIEW_CENTER + direction * Vector2(440, 210)
+	var normal := direction.orthogonal()
+	draw_colored_polygon(PackedVector2Array([point + direction * 14, point - direction * 8 + normal * 8, point - direction * 8 - normal * 8]), Color("#ffe47a"))
+	draw_string(ThemeDB.fallback_font, point + Vector2(-32, 30), "%.0f" % island_pos.distance_to(map_destination), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, INK)
 
 
 func _draw_sky_map_content() -> void:
-	var grid_step := WorldLayout.SECTOR_SIZE * MAP_SCALE
+	var grid_step := WorldLayout.SECTOR_SIZE * map_scale
 	var origin := _world_to_map(world_origin)
-	for grid_index in range(-12, 13):
+	var grid_radius := ceili(maxf(MAP_RECT.size.x, MAP_RECT.size.y) / (2.0 * grid_step)) + 1
+	for grid_index in range(-grid_radius, grid_radius + 1):
 		var grid_x := MAP_RECT.get_center().x + fmod(origin.x - MAP_RECT.get_center().x, grid_step) + grid_index * grid_step
 		var grid_y := MAP_RECT.get_center().y + fmod(origin.y - MAP_RECT.get_center().y, grid_step) + grid_index * grid_step
 		map_ink.draw_line(Vector2(grid_x, MAP_RECT.position.y), Vector2(grid_x, MAP_RECT.end.y), Color(0.5, 0.7, 0.75, 0.12), 1.0)
@@ -2468,8 +2439,8 @@ func _draw_sky_map_content() -> void:
 	for zone_value in zones:
 		var zone: Dictionary = zone_value
 		var map_position := _world_to_map(zone.pos)
-		map_ink.draw_circle(map_position, float(zone.radius) * MAP_SCALE, Color(zone.color, 0.30))
-		map_ink.draw_arc(map_position, float(zone.radius) * MAP_SCALE, 0.0, TAU, 40, Color(zone.edge, 0.65), 1.0)
+		map_ink.draw_circle(map_position, float(zone.radius) * map_scale, Color(zone.color, 0.30))
+		map_ink.draw_arc(map_position, float(zone.radius) * map_scale, 0.0, TAU, 40, Color(zone.edge, 0.65), 1.0)
 		if warning_system_unlocked:
 			map_ink.draw_line(map_position, _world_to_map(zone.pos + zone.velocity * 60.0), Color(zone.edge, 0.35), 1.0)
 	for target in targets:
@@ -2480,18 +2451,18 @@ func _draw_sky_map_content() -> void:
 		if not bool(hazard.active) or not _radar_visible(hazard.pos):
 			continue
 		var map_position := _world_to_map(hazard.pos)
-		var center: Vector2 = IslandTiles.bounds(hazard.tiles).get_center() * MAP_SCALE
+		var center: Vector2 = IslandTiles.bounds(hazard.tiles).get_center() * map_scale
 		var color: Color = Color("#c98be8") if bool(hazard.get("shop", false)) else [Color("#72a776"), Color("#a0b1b5"), Color("#d8bd7d"), Color("#a6c583"), Color("#cf6849"), Color("#e6c558")][int(hazard.biome)]
 		for tile in hazard.tiles:
-			var rect := IslandTiles.cell_rect(map_position - center, tile.cell, IslandTiles.CELL_SIZE * MAP_SCALE)
+			var rect := IslandTiles.cell_rect(map_position - center, tile.cell, IslandTiles.CELL_SIZE * map_scale)
 			map_ink.draw_rect(rect.grow(-0.4), color)
 		if int(hazard.get("size_class", 0)) > 0:
 			var radius := 10.0 + 4.0 * int(hazard.get("size_class", 0))
 			map_ink.draw_circle(map_position, radius, Color.WHITE, false, 1.5)
 	_draw_radar_fog()
-	var island_map_position := MAP_RECT.get_center()
+	var island_map_position := _world_to_map(island_pos)
 	for tile in island_tiles:
-		var rect := IslandTiles.cell_rect(island_map_position, tile.cell, IslandTiles.CELL_SIZE * MAP_SCALE)
+		var rect := IslandTiles.cell_rect(island_map_position, tile.cell, IslandTiles.CELL_SIZE * map_scale)
 		map_ink.draw_rect(rect.grow(-0.4), Color("#acd98a"))
 	map_ink.draw_circle(island_map_position, 7.0, Color("#335f68"))
 	map_ink.draw_circle(island_map_position, 7.0, Color.WHITE, false, 2.0)
@@ -2531,8 +2502,8 @@ func _radar_visible(world_position: Vector2) -> bool:
 
 
 func _draw_radar_fog() -> void:
-	var center := MAP_RECT.get_center()
-	var radius: float = development.radar_range() * MAP_SCALE
+	var center := _world_to_map(island_pos)
+	var radius: float = development.radar_range() * map_scale
 	for segment in range(96):
 		var a := Vector2.from_angle(TAU * segment / 96.0)
 		var b := Vector2.from_angle(TAU * (segment + 1) / 96.0)
