@@ -11,5 +11,7 @@
   "facilities/energy_storage_room_v2.png": "7de87241b86973403ea2430f9174b6fc7dcb88dbeb424bd888878484d21c8fed",
   "facilities/engine_room_v2.png": "7c9d2499ee2e6796260c1bd5177f71bc952474186e7abd2fc897e9fc5cd99903",
   "facilities/grapple_workshop_v2.png": "29da8c56f5782a9624045c64864bda3a17efbcbf6174c96f74c3ed7ea0a7dcf5",
-  "characters/world_scale_reference_v1.png": "4f0066a95a9833dac94ff48f0ddbbf6cf5bcb094fe5f8a5716975aae56611de7"
+  "characters/world_scale_reference_v1.png": "4f0066a95a9833dac94ff48f0ddbbf6cf5bcb094fe5f8a5716975aae56611de7",
+  "facilities/farm_management_hut_rice_v1.png": "84402343cc8b11bbd453424b499726fd9665e1d50111054bf832f3b3bf5d88d9",
+  "facilities/farm_management_hut_tomato_v1.png": "441b3bc01de6b0db2c73cee743f11425a2624e467ad9c8364d7f32a26ec805d8"
 }

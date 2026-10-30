@@ -28,7 +28,7 @@ static func load_sources() -> Dictionary:
 	return sources
 
 
-static func draw_original(canvas: Node2D, rect: Rect2, kind: String, exposed: Dictionary) -> void:
+static func draw_original(canvas, rect: Rect2, kind: String, exposed: Dictionary) -> void:
 	kind = terrain_kind(kind)
 	var source: Texture2D = load_sources()[kind]
 	var footprint: Rect2 = FOOTPRINTS[kind]
@@ -54,7 +54,7 @@ static func ground_kind(kind: String) -> String:
 	return "grass" if kind in ["grass", "tree", "farm"] else kind
 
 
-static func draw_cliff_join(canvas: Node2D, rect: Rect2, kind_a: String, kind_b: String) -> void:
+static func draw_cliff_join(canvas, rect: Rect2, kind_a: String, kind_b: String) -> void:
 	var a: Rect2 = FOOTPRINTS[terrain_kind(kind_a)]
 	var b: Rect2 = FOOTPRINTS[terrain_kind(kind_b)]
 	var scale_a := minf(rect.size.x / a.size.x, rect.size.y / a.size.y)
@@ -69,7 +69,7 @@ static func draw_cliff_join(canvas: Node2D, rect: Rect2, kind_a: String, kind_b:
 	canvas.draw_texture_rect_region(load_sources()[terrain_kind(kind_a)], destination, source)
 
 
-static func draw_join(canvas: Node2D, rect: Rect2, kind_a: String, kind_b: String, vertical: bool) -> void:
+static func draw_join(canvas, rect: Rect2, kind_a: String, kind_b: String, vertical: bool) -> void:
 	var a := ground_kind(kind_a)
 	var b := ground_kind(kind_b)
 	if a == b:
@@ -87,7 +87,7 @@ static func draw_join(canvas: Node2D, rect: Rect2, kind_a: String, kind_b: Strin
 		_draw_join_part(canvas, second, rect, b, vertical)
 
 
-static func _draw_join_part(canvas: Node2D, part: Rect2, whole: Rect2, kind: String, vertical: bool) -> void:
+static func _draw_join_part(canvas, part: Rect2, whole: Rect2, kind: String, vertical: bool) -> void:
 	var footprint: Rect2 = FOOTPRINTS[kind]
 	var scale_value := (whole.size.y / 64.0 if vertical else whole.size.x / 80.0) * 80.0 / footprint.size.x
 	var source_position := footprint.get_center() + (part.position - whole.get_center()) / scale_value

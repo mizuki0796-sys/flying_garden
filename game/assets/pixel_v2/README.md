@@ -9,7 +9,9 @@
 
 - `terrain/`：草地、农田、沙地、岩石、岩浆、金矿，以及用户选定的 `tree_tile_concept_v2_large.png` 大树原稿。
 - `crops/`：水稻和番茄五阶段横向图集。
-- `facilities/`：引擎室、储能室、抓钩工坊。
+- `facilities/`：引擎室、储能室、抓钩工坊，以及 2026-10-26 确认并接入的水稻 / 番茄农务小屋。
+
+农务小屋使用 `farm_management_hut_rice_v1.png`（金色屋顶）与 `farm_management_hut_tomato_v1.png`（红色屋顶）。两张图均保留生成原文件，由 `AtlasTexture` 按透明边界提取内容，不重绘、换色或改写源像素。按小屋管理作物选择建筑与面板图片；已有存档的小屋自动采用对应外观。农务小屋不再绘制储能室的烟囱、能源灯和临时文字牌。
 - `characters/world_scale_reference_v1.png`：仅从中裁取 40 像素高的小人；树使用 `terrain/tree_tile_concept_v2_large.png`，不从比例表取替代版本。
 
 ## 连续地面与原稿提取

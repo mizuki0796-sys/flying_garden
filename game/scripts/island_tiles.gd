@@ -150,7 +150,7 @@ static func draw_ground(canvas: Node2D, center: Vector2, tiles: Array, size: Vec
 				var detail := rect.position + size * Vector2(0.15 + 0.20 * mark, 0.25 + 0.15 * posmod(cell.x + cell.y + mark, 4))
 				canvas.draw_rect(Rect2(detail, Vector2(3, 2) * size.x / CELL_SIZE.x), color.darkened(0.20))
 
-static func draw_shadow(canvas: Node2D, origin: Vector2, tiles: Array) -> void:
+static func draw_shadow(canvas, origin: Vector2, tiles: Array) -> void:
 	var cells: Array = []
 	for tile in tiles: cells.append(tile.cell)
 	var key := str(cells)
@@ -214,7 +214,7 @@ static func _tile_painter_order(a: Dictionary, b: Dictionary) -> bool:
 	return a_cell.y < b_cell.y
 
 
-static func _draw_textured_ground(canvas: Node2D, center: Vector2, tiles: Array, size: Vector2, textures: Dictionary) -> void:
+static func _draw_textured_ground(canvas, center: Vector2, tiles: Array, size: Vector2, textures: Dictionary) -> void:
 	var ordered := tiles.duplicate()
 	ordered.sort_custom(_tile_painter_order)
 	var occupied: Dictionary = {}
@@ -293,14 +293,16 @@ static func tree_hover_alpha(destination: Rect2, root_y: float, bend: float, poi
 
 
 static func draw_decor(canvas: Node2D, center: Vector2, tiles: Array, size: Vector2, mineral := false, tree_texture: Texture2D = null, textured_ground := false, time := 0.0, wind := 0.0, pointer := Vector2.INF) -> void:
-	var ordered := tiles.duplicate()
-	ordered.sort_custom(_tile_painter_order)
+	var ordered := tiles
+	if tiles.size() > 1:
+		ordered = tiles.duplicate()
+		ordered.sort_custom(_tile_painter_order)
 	for tile in ordered:
 		var p := cell_rect(center, tile.cell, size).get_center() + Vector2(0, size.y * 0.15)
 		var scale_value := size.x / CELL_SIZE.x
 		if tile.kind == "tree":
 			if tree_texture != null:
-				var tree_height := PixelTerrain.TREE_HEIGHT * scale_value
+				var tree_height := PixelTerrain.TREE_HEIGHT * scale_value * lerpf(0.22, 1.0, float(tile.get("tree_progress", 1.0)))
 				var tree_width := tree_height * float(tree_texture.get_width()) / maxf(1.0, float(tree_texture.get_height()))
 				var root := cell_rect(center, tile.cell, size).get_center()
 				# The original trunk is slightly left of the canopy's center.

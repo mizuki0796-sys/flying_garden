@@ -2,14 +2,17 @@ extends RefCounted
 
 const Rules = preload("res://scripts/development_rules.gd")
 const Tiles = preload("res://scripts/island_tiles.gd")
+const FarmHutUI = preload("res://scripts/farm_hut_ui.gd")
 const NONE := Vector2i(999999, 999999)
-const LABELS := {"gather": "采集资源", "farm": "开垦农田", "tree": "种植林木", "power": "建造引擎室", "water": "建造储能室", "grapple": "建造抓钩小屋", "energy": "建造能源工厂", "repair": "修缮", "upgrade": "升级设施", "move": "搬迁设施", "trim": "剪裁地块", "confirm_trim": "确认抛弃地块", "cancel": "取消", "restore": "整平为土地", "plant_rice": "播种水稻", "plant_tomato": "播种番茄", "harvest": "收获作物"}
+const LABELS := {"harbor": "建造探索港口", "ship": "管理探索飞船", "reinforce": "加固地块", "recycle": "回收地块", "confirm_recycle": "确认回收地块", "gather": "采集资源", "farm": "开垦农田", "tree": "种植林木", "power": "建造引擎室", "water": "建造储能室", "grapple": "建造抓钩小屋", "energy": "建造能源工厂", "repair": "修缮", "upgrade": "升级设施", "move": "搬迁设施", "trim": "剪裁地块", "confirm_trim": "确认抛弃地块", "cancel": "取消", "restore": "整平为土地", "plant_rice": "播种水稻", "plant_tomato": "播种番茄", "harvest": "收获作物"}
 const ICONS := {"gather": "build", "farm": "rice", "tree": "wood", "power": "energy", "water": "house", "energy": "energy", "repair": "build", "upgrade": "growth", "move": "focus", "trim": "land", "confirm_trim": "land", "cancel": "help", "restore": "land", "plant_rice": "rice_seeds", "plant_tomato": "tomato_seeds", "harvest": "rice"}
 const SHORT_NAMES := {"coins": "金", "wood": "木", "stone": "石", "ore": "矿", "magma": "岩浆", "food": "粮", "rice_seeds": "稻种", "tomato_seeds": "番茄种"}
 var game
 var panel: PanelContainer
+var scroll: ScrollContainer
 var content: VBoxContainer
 var cell := NONE
+var confirm_recycle := false
 var confirm_trim := false
 var buttons: Dictionary = {}
 
@@ -23,7 +26,11 @@ func create_ui(root: Control) -> void:
 	root.add_child(panel)
 	content = VBoxContainer.new()
 	content.add_theme_constant_override("separation", 4)
-	panel.add_child(game._with_margin(content, 9))
+	scroll = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(content)
+	panel.add_child(game._with_margin(scroll, 9))
 	panel.hide()
 	panel.gui_input.connect(func(event: InputEvent) -> void:
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
@@ -37,6 +44,7 @@ func close() -> void:
 	if panel != null: panel.hide()
 	cell = NONE
 	confirm_trim = false
+	confirm_recycle = false
 	game.queue_redraw()
 
 func open_at(target: Vector2i) -> bool:
@@ -46,6 +54,7 @@ func open_at(target: Vector2i) -> bool:
 		return false
 	cell = target
 	confirm_trim = false
+	confirm_recycle = false
 	game.context_panel.hide()
 	game.hovered_plot = -1
 	render()
@@ -58,9 +67,10 @@ func actions_for(target: Vector2i) -> Array:
 	var dev = game.development
 	var tile: Dictionary = dev.tile_at(target)
 	if tile.is_empty(): return []
-	if str(tile.facility) == "farm_hut": return ["farm_crop", "farm_toggle", "upgrade", "repair", "move"]
-	if str(tile.facility) == "energy": return ["fuel_source", "repair", "move"]
-	if str(tile.facility) != "": return ["upgrade", "repair", "move"]
+	if str(tile.facility) == "farm_hut": return ["farm_crop", "farm_toggle", "upgrade", "repair", "move", "reinforce"]
+	if str(tile.facility) == "harbor": return ["ship", "repair", "move", "reinforce"]
+	if str(tile.facility) == "energy": return ["fuel_source", "repair", "move", "reinforce"]
+	if str(tile.facility) != "": return ["upgrade", "repair", "move", "reinforce"]
 	var actions: Array = []
 	if tile.kind == "farm":
 		var index: int = dev.plot_at(target)
@@ -73,9 +83,9 @@ func actions_for(target: Vector2i) -> Array:
 		if tile.kind in ["grass", "sand"]:
 			actions.append("farm")
 			if tile.kind == "grass": actions.append("tree")
-			actions.append_array(["power", "water", "grapple", "energy", "farm_hut"])
-	if float(tile.get("hp", 100.0)) < 100.0: actions.append("repair")
-	actions.append("trim")
+			actions.append_array(["power", "water", "grapple", "energy", "farm_hut", "harbor"])
+	if not dev.repair_cost(target).is_empty(): actions.append("repair")
+	actions.append_array(["reinforce", "trim", "recycle"])
 	return actions
 
 func quote(target: Vector2i, key: String) -> Dictionary:
@@ -88,33 +98,40 @@ func quote(target: Vector2i, key: String) -> Dictionary:
 	var index: int = dev.plot_at(target)
 	if Rules.BUILD_COSTS.has(key):
 		cost = Rules.BUILD_COSTS[key]
-		var required: String = {"tree": "forestry", "power": "engine", "water": "storage", "grapple": "hook", "energy": "automatic", "farm_hut": "agri_automation"}.get(key, "")
+		var required: String = {"tree": "forestry", "power": "engine", "water": "storage", "grapple": "hook", "energy": "automatic", "farm_hut": "agri_automation", "harbor": "harbor"}.get(key, "")
 		if facility != "" or tile.kind not in (["grass"] if key == "tree" else ["grass", "sand"]): reason = "需要空闲土地"
-		elif float(tile.get("hp", 100.0)) < 100.0: reason = "请先修缮"
+		elif Rules.tile_health(tile) < 1.0: reason = "请先修缮"
 		elif required != "" and int(dev.tech[required]) == 0: reason = "需" + str(Rules.TECH[required].name)
 		elif key == "power" and dev.facility_count(key) >= int(dev.tech.engine): reason = "引擎数量已达上限"
-		elif key in ["grapple", "energy"] and dev.has_facility(key): reason = "只能建造一座"
+		elif key == "harbor" and not game.land.is_edge(target): reason = "需要外围地块"
+		elif key in ["grapple", "energy", "harbor"] and dev.has_facility(key): reason = "只能建造一座"
+	elif key == "reinforce":
+		cost = Rules.reinforcement_cost(int(tile.get("reinforcement", 0)))
+		reason = game.land.reinforce_reason(target)
 	elif key == "gather":
 		var required := 2 if tile.kind == "lava" else (1 if tile.kind in ["rock", "gold"] else 0)
 		if facility != "" or bool(tile.get("depleted", false)) or tile.kind == "farm": reason = "没有可采集资源"
+		elif tile.kind == "tree" and float(tile.get("tree_progress", 1.0)) < 1.0: reason = "林木尚未成熟"
 		elif int(dev.tech.development) < required: reason = "需岛屿开拓 %d 级" % required
 	elif key == "repair":
 		cost = dev.repair_cost(target)
 		if cost.is_empty(): reason = "耐久完好"
 	elif key == "upgrade":
 		cost = dev.upgrade_cost(target)
-		if facility == "energy": reason = "通过能源科技提升效率"
+		if facility in ["energy", "harbor"]: reason = "通过能源科技提升效率"
 		elif facility == "": reason = "请选择设施"
 		else:
-			var branch: String = {"power": "engine", "water": "storage", "grapple": "hook", "farm_hut": "agri_automation"}[facility]
+			var branch: String = {"power": "engine", "water": "storage", "grapple": "hook", "farm_hut": "agri_automation", "harbor": "harbor"}[facility]
 			var max_level := int(dev.tech[branch]) + (0 if facility == "farm_hut" else 1)
 			if int(tile.get("level", 1)) >= max_level: reason = "已满级" if facility == "farm_hut" and max_level == 3 else "需提升" + str(Rules.TECH[branch].name)
 	elif key == "move":
 		cost = {"coins": 5}
 		if facility == "": reason = "请选择设施"
 		elif game.hook_state != game.HOOK_READY: reason = "等待抓钩收回"
-	elif key in ["trim", "confirm_trim"]:
-		if int(dev.tech.terraform) == 0: reason = "需岛屿剪裁"
+	elif key in ["trim", "confirm_trim", "recycle", "confirm_recycle"]:
+		cost = Rules.TRIM_COST
+		if key in ["recycle", "confirm_recycle"] and int(dev.tech.recycling) == 0: reason = "需地块回收科技"
+		elif int(dev.tech.terraform) == 0: reason = "需岛屿剪裁"
 		elif game.hook_state != game.HOOK_READY: reason = "等待抓钩收回"
 		elif not dev.can_trim(target): reason = "须保留核心、设施和连通性"
 	elif key == "restore":
@@ -127,7 +144,7 @@ func quote(target: Vector2i, key: String) -> Dictionary:
 			if int(game.plots[index].state) != 2: reason = "作物尚未成熟"
 		else:
 			cost = {"rice_seeds" if key == "plant_rice" else "tomato_seeds": 1}
-			if float(tile.get("hp", 100.0)) < 100.0: reason = "请先修缮"
+			if Rules.tile_health(tile) < 1.0: reason = "请先修缮"
 			elif int(game.plots[index].state) != 0: reason = "农田已有作物"
 	if reason == "" and not dev.can_pay(cost): reason = "资源不足"
 	return {"cost": cost, "reason": reason}
@@ -141,6 +158,7 @@ func _button_text(key: String, state: Dictionary) -> String:
 	var tile: Dictionary = game.development.tile_at(cell)
 	if key == "farm_crop": return "管理作物：%s · 点击切换" % game._crop_name(int(tile.get("farm_crop", 0)))
 	if key == "farm_toggle": return "暂停自动管理" if bool(tile.get("farm_enabled", true)) else "启动自动管理"
+	if key in ["recycle", "confirm_recycle"] and state.reason == "": return LABELS[key] + " · " + _cost_text(state.cost) + "\n返还 " + _cost_text(game.land.refund(cell))
 	if key == "fuel_source": return "选择能源来源 · R"
 	var title: String = "建造自动化管理小屋" if key == "farm_hut" else LABELS[key]
 	if state.reason != "": title += " · " + str(state.reason)
@@ -162,12 +180,19 @@ func render() -> void:
 	header.add_theme_font_size_override("font_size", 16)
 	header.add_theme_color_override("font_color", game.INK)
 	content.add_child(header)
-	var keys: Array = ["confirm_trim", "cancel"] if confirm_trim else actions_for(cell)
+	panel.custom_minimum_size.x = 360 if tile.facility == "farm_hut" else 292
+	if tile.facility == "farm_hut":
+		header.hide()
+		FarmHutUI.render(self, tile)
+	else:
+		header.text += "\n加固 %d/15 · 耐久 %d/%d" % [tile.get("reinforcement", 0), tile.hp, Rules.tile_max_hp(tile)]
+		if tile.kind == "tree": header.text += "\n成长 %d%% · 生命 %d/%d" % [float(tile.get("tree_progress", 1.0)) * 100, tile.get("tree_hp", 100), Rules.tree_max_hp(tile)]
+	var keys: Array = ["confirm_recycle", "cancel"] if confirm_recycle else (["confirm_trim", "cancel"] if confirm_trim else actions_for(cell))
 	for key in keys:
 		var state := quote(cell, key)
 		var button: Button = game._make_small_button(_button_text(key, state))
 		button.name = "TileAction_" + key
-		button.custom_minimum_size = Vector2(268, 38)
+		button.custom_minimum_size = Vector2(330 if tile.facility == "farm_hut" else 268, 35)
 		button.add_theme_font_size_override("font_size", 11)
 		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		button.icon = game._icon(2) if key == "grapple" else game._hud_icon(ICONS.get(key, "house"))
@@ -188,10 +213,13 @@ func render() -> void:
 	update()
 
 func _place() -> void:
+	scroll.custom_minimum_size = Vector2(panel.custom_minimum_size.x - 18, minf(500, content.get_combined_minimum_size().y))
+	panel.reset_size()
 	var anchor: Vector2 = game._world_to_screen(game.island_pos + Vector2(cell) * Tiles.CELL_SIZE)
 	var position := anchor + Vector2(28, -24)
-	if position.x + panel.size.x > game.VIEW_SIZE.x - 12: position.x = anchor.x - panel.size.x - 28
-	panel.position = position.clamp(Vector2(144, 92), game.VIEW_SIZE - panel.size - Vector2(12, 12))
+	if position.x + panel.size.x > game.VIEW_SIZE.x - 12:
+		position.x = anchor.x - panel.size.x - 28
+	panel.position = position.clamp(Vector2(80, 92), game.VIEW_SIZE - panel.size - Vector2(12, 12))
 
 func update() -> void:
 	if not is_instance_valid(game) or not is_open(): return
@@ -210,6 +238,7 @@ func activate(key: String) -> bool:
 	if state.reason != "": dev.message(state.reason); update(); return false
 	if key == "cancel": close(); return true
 	if key == "trim": confirm_trim = true; render(); return true
+	if key == "recycle": confirm_recycle = true; render(); return true
 	if key in ["farm_crop", "farm_toggle"]:
 		var tile: Dictionary = dev.tile_at(cell)
 		if str(tile.facility) != "farm_hut": return false
@@ -221,8 +250,11 @@ func activate(key: String) -> bool:
 	close()
 	match key:
 		"gather": return dev.gather(target)
-		"farm", "tree", "power", "water", "grapple", "energy", "farm_hut": return dev.build(target, key)
+		"farm", "tree", "power", "water", "grapple", "energy", "farm_hut", "harbor": return dev.build(target, key)
 		"fuel_source": dev.toggle_energy(); return true
+		"ship": game.explorer.open_menu(); return true
+		"reinforce": return game.land.reinforce(target)
+		"confirm_recycle": return game.land.recycle(target)
 		"upgrade": return dev.upgrade(target)
 		"repair": return dev.repair(target)
 		"restore": return dev.restore_farmland(target)
