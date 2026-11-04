@@ -75,6 +75,8 @@ func _draw() -> void:
 	draw_set_transform(offset, 0, Vector2.ONE * zoom)
 	var game = editor.game
 	Tiles.draw_ground(self, Vector2.ZERO, editor.draft, Tiles.CELL_SIZE, game.terrain_textures)
+	for tile in editor.draft:
+		if tile.facility == "harbor": game._draw_harbor(self, Vector2(tile.cell) * Tiles.CELL_SIZE, tile.cell, editor.draft)
 	var ordered: Array = editor.draft.duplicate()
 	var crop_positions: Dictionary = {}
 	for i in range(editor.original.size()):
@@ -90,7 +92,6 @@ func _draw() -> void:
 			"water", "energy": game._draw_building(game.water_grain_hut_texture, center + Vector2(6, 20), 88.0, tile.facility, self)
 			"grapple": game._draw_building(game.grapple_hut_texture, center + Vector2(12, 20), 100.0, "grapple", self)
 			"farm_hut": game._draw_building(game.farm_hut_texture(tile), center + Vector2(0, 20), 80.0, "farm_hut", self)
-			"harbor": game._draw_harbor(self, center)
 	for index in editor.selected:
 		var rect := Tiles.cell_rect(Vector2.ZERO, editor.draft[index].cell)
 		draw_rect(rect.grow(-2), Color("#ffe88d"), false, 3.0 / zoom)

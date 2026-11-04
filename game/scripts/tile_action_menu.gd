@@ -4,7 +4,7 @@ const Rules = preload("res://scripts/development_rules.gd")
 const Tiles = preload("res://scripts/island_tiles.gd")
 const FarmHutUI = preload("res://scripts/farm_hut_ui.gd")
 const NONE := Vector2i(999999, 999999)
-const LABELS := {"harbor": "建造探索港口", "ship": "管理探索飞船", "reinforce": "加固地块", "recycle": "回收地块", "confirm_recycle": "确认回收地块", "gather": "采集资源", "farm": "开垦农田", "tree": "种植林木", "power": "建造引擎室", "water": "建造储能室", "grapple": "建造抓钩小屋", "energy": "建造能源工厂", "repair": "修缮", "upgrade": "升级设施", "move": "搬迁设施", "trim": "剪裁地块", "confirm_trim": "确认抛弃地块", "cancel": "取消", "restore": "整平为土地", "plant_rice": "播种水稻", "plant_tomato": "播种番茄", "harvest": "收获作物"}
+const LABELS := {"ship_repair": "修理飞船", "ship_build": "建造飞船", "harbor": "建造探索港口", "ship": "管理探索飞船", "reinforce": "加固地块", "recycle": "回收地块", "confirm_recycle": "确认回收地块", "gather": "采集资源", "farm": "开垦农田", "tree": "种植林木", "power": "建造引擎室", "water": "建造储能室", "grapple": "建造抓钩小屋", "energy": "建造能源工厂", "repair": "修缮", "upgrade": "升级设施", "move": "搬迁设施", "trim": "剪裁地块", "confirm_trim": "确认抛弃地块", "cancel": "取消", "restore": "整平为土地", "plant_rice": "播种水稻", "plant_tomato": "播种番茄", "harvest": "收获作物"}
 const ICONS := {"gather": "build", "farm": "rice", "tree": "wood", "power": "energy", "water": "house", "energy": "energy", "repair": "build", "upgrade": "growth", "move": "focus", "trim": "land", "confirm_trim": "land", "cancel": "help", "restore": "land", "plant_rice": "rice_seeds", "plant_tomato": "tomato_seeds", "harvest": "rice"}
 const SHORT_NAMES := {"coins": "金", "wood": "木", "stone": "石", "ore": "矿", "magma": "岩浆", "food": "粮", "rice_seeds": "稻种", "tomato_seeds": "番茄种"}
 var game
@@ -68,7 +68,7 @@ func actions_for(target: Vector2i) -> Array:
 	var tile: Dictionary = dev.tile_at(target)
 	if tile.is_empty(): return []
 	if str(tile.facility) == "farm_hut": return ["farm_crop", "farm_toggle", "upgrade", "repair", "move", "reinforce"]
-	if str(tile.facility) == "harbor": return ["ship", "repair", "move", "reinforce"]
+	if str(tile.facility) == "harbor": return ["ship_repair", "ship_build"]
 	if str(tile.facility) == "energy": return ["fuel_source", "repair", "move", "reinforce"]
 	if str(tile.facility) != "": return ["upgrade", "repair", "move", "reinforce"]
 	var actions: Array = []
@@ -104,7 +104,20 @@ func quote(target: Vector2i, key: String) -> Dictionary:
 		elif required != "" and int(dev.tech[required]) == 0: reason = "需" + str(Rules.TECH[required].name)
 		elif key == "power" and dev.facility_count(key) >= int(dev.tech.engine): reason = "引擎数量已达上限"
 		elif key == "harbor" and not game.land.is_edge(target): reason = "需要外围地块"
-		elif key in ["grapple", "energy", "harbor"] and dev.has_facility(key): reason = "只能建造一座"
+		elif key in ["grapple", "energy"] and dev.has_facility(key): reason = "只能建造一座"
+	elif key in ["ship_build", "ship_repair"]:
+		var ship = game.explorer
+		cost = Rules.SHIP_BUILD_COST if key == "ship_build" else ship.repair_cost()
+		if facility != "harbor": reason = "请选择港口"
+		elif Rules.tile_health(tile) < 1.0: reason = "请先修缮港口"
+		elif key == "ship_build":
+			if ship.built: reason = "飞船只能建造一艘"
+			elif int(dev.tech.exploration) == 0: reason = "需探索飞船科技"
+			elif ship.berths(target).is_empty(): reason = "港口周围没有可用泊位"
+		else:
+			if not ship.built: reason = "尚未建造飞船"
+			elif ship.state != "docked" or ship.harbor().get("cell") != target: reason = "飞船须停靠此港口"
+			elif ship.hp >= ship.MAX_HP: reason = "飞船耐久完好"
 	elif key == "reinforce":
 		cost = Rules.reinforcement_cost(int(tile.get("reinforcement", 0)))
 		reason = game.land.reinforce_reason(target)
@@ -252,6 +265,8 @@ func activate(key: String) -> bool:
 		"gather": return dev.gather(target)
 		"farm", "tree", "power", "water", "grapple", "energy", "farm_hut", "harbor": return dev.build(target, key)
 		"fuel_source": dev.toggle_energy(); return true
+		"ship_build": return game.explorer.construct(target)
+		"ship_repair": return game.explorer.repair()
 		"ship": game.explorer.open_menu(); return true
 		"reinforce": return game.land.reinforce(target)
 		"confirm_recycle": return game.land.recycle(target)

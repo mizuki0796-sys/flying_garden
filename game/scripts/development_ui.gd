@@ -11,7 +11,7 @@ const ACTIONS := [
 	["grapple", "抓钩小屋", "focus", "hook", "提供抓钩发射点；全岛限一座。"],
 	["energy", "能源工厂", "energy", "automatic", "消耗所选来源补能；全岛限一座。"],
 	["farm_hut", "管理小屋", "house", "agri_automation", "每 6 秒管理半径内农田；初始半径 2 格。\n右键小屋切换作物、暂停或升级。"],
-	["harbor", "探索港口", "map", "harbor", "建在浮岛外围，供探索飞船停泊；全岛限一座。"],
+	["harbor", "探索港口", "map", "harbor", "将外围一格建为专用停泊地块；飞船只能停在它相邻的空位，港口不限，飞船全岛限一艘。"],
 	["reinforce", "加固", "shield", "reinforcement", "提高地块耐久；科技每级解锁 3 次，最多 15 次。\n费用随加固次数增加，右键目标地块可查。"],
 	["upgrade", "升级", "growth", "", "提升设施等级；费用与上限由设施及科技决定。\n右键目标设施可查看当前费用。"],
 	["repair", "修缮", "build", "", "修复地块、设施或林木。农田修复便宜，地基修复昂贵。\n右键目标地块查看实际费用。"],
@@ -79,7 +79,7 @@ static func render(dev) -> void:
 		if required != "" and int(dev.tech[required]) == 0:
 			reason = "需研究：" + str(Rules.TECH[required].name) + "（T 科技树）"
 		elif key == "power" and dev.facility_count(key) >= int(dev.tech.engine): reason = "引擎数量已达上限"
-		elif key in ["grapple", "energy", "harbor"] and dev.has_facility(key): reason = "已建造，全岛限一座"
+		elif key in ["grapple", "energy"] and dev.has_facility(key): reason = "已建造，全岛限一座"
 		if key == "recycle" and int(dev.tech.terraform) == 0: reason = "需研究：岛屿剪裁（T 科技树）"
 		var cost: Dictionary = Rules.BUILD_COSTS.get(key, Rules.TRIM_COST if key in ["trim", "recycle"] else {})
 		if reason == "" and not dev.can_pay(cost): reason = "资源不足"
