@@ -136,6 +136,7 @@ func test_trees(game) -> void:
 	check(tile.tree_progress == 1.0 and tile.tree_hp == 100.0, "Tree reaches maturity in 180 clear daytime seconds")
 
 func test_ship(game) -> void:
+	game.island_velocity = Vector2.ZERO
 	var dev = game.development
 	var ship = game.explorer
 	dev.tech.harbor = 1
@@ -145,8 +146,8 @@ func test_ship(game) -> void:
 	game.plots.remove_at(dev.plot_at(Vector2i.ZERO))
 	check(not dev.build(Vector2i.ZERO, "harbor"), "Port cannot be built in the island interior")
 	check(dev.build(Vector2i(-2, 0), "harbor"), "Port can be built on perimeter land")
-	check(not dev.build(Vector2i(0, -2), "harbor"), "Only one port can be constructed")
-	check(ship.construct() and not ship.construct(), "Only one exploration ship can be constructed")
+	check(dev.build(Vector2i(0, -2), "harbor"), "Multiple ports can be constructed")
+	check(ship.construct(Vector2i(-2, 0)) and not ship.construct(), "Only one exploration ship can be constructed")
 	game.energy = 150.0
 	ship.update(2)
 	check(ship.charge == 50.0 and game.energy == 100.0, "Dock charging transfers island energy without creating it")
@@ -157,13 +158,17 @@ func test_ship(game) -> void:
 	ship.charge = 500.0
 	dev.tech.radar = 3
 	var terrain: Dictionary = game.hazards[0]
+	terrain.pos = ship.dock_position() + Vector2(-600, 0)
+	game.hazards = [terrain]
 	terrain.tiles[0].kind = "rock"
 	terrain.tiles[0].depleted = false
 	check(ship.launch(), "Charged ship finds a real mineral deposit")
 	var mined_tile: Dictionary = ship.deposits(ship.target)[0]
 	terrain = ship.target
 	var ore: int = dev.materials.ore
-	for i in range(2400): ship.update(0.25)
+	for i in range(2400):
+		ship.update(0.25)
+		if ship.can_dock(): ship.dock_island()
 	check(ship.state == "docked" and dev.materials.ore > ore, "Ship completes outbound, mining, return and unloading")
 	check(mined_tile.depleted and mined_tile.kind == "grass", "Mining depletes the actual external deposit")
 	check(ship.cargo.is_empty(), "Delivered cargo is cleared")

@@ -51,7 +51,7 @@ func validate(data: Variant) -> bool:
 	if data.state.hook_state not in [0, 1, 2, 3, 4] or data.state.view_mode not in [0, 1] or data.state.selected_tool not in [0, 1, 2]: return false
 	if data.get("action", "") not in ["gather", "farm", "tree", "power", "water", "grapple", "energy", "farm_hut", "harbor", "reinforce", "recycle", "upgrade", "move", "repair", "restore", "trim", "survey"]: return false
 	for key in Rules.TECH:
-		if key == "layout" and not data.tech.has(key): continue # Older version-1 saves predate this branch.
+		if key in ["layout", "gathering", "crop_yield", "ship_capacity"] and not data.tech.has(key): continue # Older version-1 saves predate these branches.
 		if not data.tech.get(key) is int or data.tech[key] < 0 or data.tech[key] > Rules.TECH[key].max: return false
 	var presets: Variant = data.get("layout_presets", [{}, {}, {}])
 	if not presets is Array or presets.size() != 3: return false
@@ -86,6 +86,7 @@ func validate(data: Variant) -> bool:
 			for field in ["pos", "radius", "biome", "name", "variant", "active", "tethered", "world_key", "world_index"]:
 				if not terrain.has(field): return false
 			if not terrain.pos is Vector2 or not terrain.pos.is_finite() or not terrain.world_key is Vector2i: return false
+			if terrain.has("velocity") and (not terrain.velocity is Vector2 or not terrain.velocity.is_finite()): return false
 			for tile in terrain.tiles:
 				if not valid_tile(tile): return false
 	if not Rules.FUEL_NAMES.has(data.get("fuel_source", "invalid")): return false
@@ -93,12 +94,25 @@ func validate(data: Variant) -> bool:
 		if not data.get(key) is float or not is_finite(data[key]): return false
 	if data.get("selected_crop", -1) not in [0, 1] or not data.get("weather_rng") is int: return false
 	var ship: Dictionary = data.ship
-	if not ship.get("built") is bool or ship.get("state", "") not in ["docked", "outbound", "mining", "returning"]: return false
+	if ship.has("home_cell") and not ship.home_cell is Vector2i: return false
+	if ship.has("home_direction") and (not ship.home_direction is Vector2i or ship.home_direction not in [Vector2i.ZERO, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]): return false
+	if not ship.get("built") is bool or ship.get("state", "") not in ["docked", "outbound", "contact", "mining", "overflow", "returning", "manual"]: return false
+	if ship.has("velocity") and (not ship.velocity is Vector2 or not ship.velocity.is_finite()): return false
+	var hp: Variant = ship.get("hp", 100.0)
+	if not hp is float or not is_finite(hp) or hp < 0.0 or hp > 100.0 or (ship.built and hp <= 0.0): return false
+	var dock_offset: Variant = ship.get("dock_offset", Vector2.ZERO)
+	if not dock_offset is Vector2 or not dock_offset.is_finite(): return false
+	if not ship.get("towed", false) is bool: return false
+	if ship.get("towed", false) and (not ship.built or ship.state != "returning" or ship.get("charge") != 0.0 or not data.hooked.is_empty()): return false
 	if not ship.get("charge") is float or not is_finite(ship.charge) or ship.charge < 0 or ship.charge > 500: return false
 	if not ship.get("position") is Vector2 or not ship.position.is_finite() or not ship.get("cargo") is Dictionary: return false
+	var cargo_total := 0
 	for key in ship.cargo:
 		if key not in ["stone", "ore", "magma"] or not ship.cargo[key] is int or ship.cargo[key] < 0: return false
+		cargo_total += ship.cargo[key]
+		if cargo_total > Rules.SHIP_CAPACITIES[int(data.tech.get("ship_capacity", 0))]: return false
 	if not ship.get("target_key") is Vector2i or not ship.get("target_index") is int or not ship.get("mining_left") is float: return false
+	if not is_finite(ship.mining_left): return false
 	if not data.hooked.is_empty():
 		if not data.hooked.get("key") is Vector2i or not data.hooked.get("index") is int: return false
 		if not data.sectors.has(data.hooked.key): return false
@@ -174,6 +188,7 @@ func load_slot(slot: int) -> bool:
 	# Old saves may contain an active route. Restore its marker, never its driver.
 	game._cancel_autopilot("手动驾驶")
 	game.view_mode = game.VIEW_GOD
+	game.follow_ship = false
 	game.navigation_view.clear_hover()
 	game.navigation_view.queue_redraw()
 	game.map_center = game.island_pos
@@ -181,6 +196,8 @@ func load_slot(slot: int) -> bool:
 	game.plots = packet.plots.duplicate(true)
 	game.development.tech = packet.tech.duplicate()
 	if not game.development.tech.has("layout"): game.development.tech.layout = 0
+	for key in ["gathering", "crop_yield", "ship_capacity"]:
+		if not game.development.tech.has(key): game.development.tech[key] = 0
 	game.development.layout.presets = packet.get("layout_presets", [{}, {}, {}]).duplicate(true)
 	game.development.materials = packet.materials.duplicate()
 	game.development.fuel_source = packet.fuel_source

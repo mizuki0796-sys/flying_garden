@@ -4,12 +4,12 @@ const Rules = preload("res://scripts/development_rules.gd")
 const GROUPS := [
 	{"name": "动力与能源", "icon": "energy", "keys": ["engine", "efficiency", "storage", "bioenergy", "automatic", "mineral_energy", "geothermal"]},
 	{"name": "岛屿建设", "icon": "land", "keys": ["development", "terraform", "layout", "recycling"]},
-	{"name": "农林生产", "icon": "rice", "keys": ["agri_automation", "forestry"]},
+	{"name": "农林生产", "icon": "rice", "keys": ["agri_automation", "forestry", "gathering", "crop_yield"]},
 	{"name": "防护与天气", "icon": "shield", "keys": ["reinforcement", "shelter", "forecast"]},
 	{"name": "航行与对接", "icon": "map", "keys": ["hook", "docking", "radar"]},
-	{"name": "港口与探索", "icon": "house", "keys": ["harbor", "exploration"]},
+	{"name": "港口与探索", "icon": "house", "keys": ["harbor", "exploration", "ship_capacity"]},
 ]
-const ICONS := {"engine": "build", "efficiency": "energy", "storage": "house", "bioenergy": "rice", "automatic": "house", "mineral_energy": "ore", "geothermal": "magma", "development": "land", "terraform": "damage", "layout": "land", "recycling": "growth", "agri_automation": "rice", "forestry": "wood", "reinforcement": "stone", "shelter": "shield", "forecast": "rain", "hook": "build", "docking": "land", "radar": "focus", "harbor": "house", "exploration": "map"}
+const ICONS := {"engine": "build", "efficiency": "energy", "storage": "house", "bioenergy": "rice", "automatic": "house", "mineral_energy": "ore", "geothermal": "magma", "development": "land", "terraform": "damage", "layout": "land", "recycling": "growth", "agri_automation": "rice", "forestry": "wood", "gathering": "ore", "crop_yield": "rice", "reinforcement": "stone", "shelter": "shield", "forecast": "rain", "hook": "build", "docking": "land", "radar": "focus", "harbor": "house", "exploration": "map", "ship_capacity": "house"}
 const HOVER_DELAY := 0.5
 var game
 var dev
@@ -155,10 +155,11 @@ func _add_node(key: String) -> void:
 		button.add_child(badge)
 	var pips := Control.new()
 	pips.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	pips.position = Vector2(38 - int(rule.max) * 7, 64)
+	var spacing := 6 if int(rule.max) > 5 else 14
+	pips.position = Vector2(38 - int(rule.max) * spacing / 2, 64)
 	pips.draw.connect(func() -> void:
 		for i in range(int(rule.max)):
-			pips.draw_rect(Rect2(i * 14, 0, 10, 5), Color("#71884f") if i < int(dev.tech[key]) else Color("#c6bea6"))
+			pips.draw_rect(Rect2(i * spacing, 0, spacing - 4 if spacing == 14 else 4, 5), Color("#71884f") if i < int(dev.tech[key]) else Color("#c6bea6"))
 	)
 	button.add_child(pips)
 	if dev._tech_blocked(key):
@@ -215,6 +216,16 @@ func show_card(key: String) -> void:
 	effect.custom_minimum_size.x = 260
 	effect.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(effect)
+	if key in ["gathering", "crop_yield"]:
+		var level: int = dev.tech[key]
+		var progress := "当前 ×%d" % Rules.PRODUCTION_MULTIPLIERS[level]
+		progress += " · 已满级" if level == 10 else " → 下一级 ×%d" % Rules.PRODUCTION_MULTIPLIERS[level + 1]
+		body.add_child(_label(progress, 14))
+	if key == "ship_capacity":
+		var level: int = dev.tech[key]
+		var progress := "当前 %d 份" % Rules.SHIP_CAPACITIES[level]
+		progress += " · 已满级" if level == 10 else " → 下一级 %d 份" % Rules.SHIP_CAPACITIES[level + 1]
+		body.add_child(_label(progress, 14))
 	if not rule.needs.is_empty():
 		body.add_child(_label("前置", 12))
 		var needs := HFlowContainer.new()

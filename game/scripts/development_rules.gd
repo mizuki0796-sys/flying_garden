@@ -43,6 +43,10 @@ const RECYCLE_RATIOS := [0.0, 0.25, 0.45, 0.65]
 const TREE_GROW_SECONDS := CROP_GROW_SECONDS * 4.0
 const SHIP_BUILD_COST := {"coins": 25000, "wood": 1200, "stone": 800, "ore": 600, "magma": 100}
 const TECH_COST_GROWTH := 3
+const PRODUCTION_MULTIPLIERS := [1, 2, 3, 5, 8, 12, 18, 27, 40, 60, 90]
+const PRODUCTION_COINS := [10, 30, 90, 300, 1000, 3500, 12000, 45000, 160000, 600000]
+const PRODUCTION_MATERIALS := [0, 2, 5, 15, 40, 120, 350, 1000, 3000, 10000]
+const SHIP_CAPACITIES := [240, 400, 640, 1000, 1500, 2200, 3200, 4500, 6000, 8000, 10000]
 # Emergency imports cost considerably more than locally gathered materials.
 const MINERAL_BUY_PRICES := {"stone": 10, "ore": 35, "magma": 90}
 
@@ -51,15 +55,18 @@ const TECH_ORDER := [
 	"engine", "efficiency", "storage",
 	"bioenergy", "automatic", "mineral_energy", "geothermal",
 	"hook", "docking", "development", "radar", "terraform",
-	"agri_automation", "forestry", "shelter", "forecast",
-	"reinforcement", "recycling", "harbor", "exploration", "layout"
+	"agri_automation", "forestry", "gathering", "crop_yield", "shelter", "forecast",
+	"reinforcement", "recycling", "harbor", "exploration", "ship_capacity", "layout"
 ]
 const TECH := {
+	"ship_capacity": {"name": "飞船扩容", "max": 10, "cost": {"coins": 1000, "wood": 20, "ore": 10}, "needs": {"exploration": 1}, "effect": "扩充货舱至最高10000份，同时降低采矿能耗；按满载比例减速，电池仍为500。货满返港", "column": 3, "row": 8, "icon": 4},
+	"gathering": {"name": "高效采集", "max": 10, "cost": {"coins": 10}, "needs": {}, "effect": "提高地面采集产量、缩短飞船采矿间隔；十级最高90倍。飞船货舱容量不变", "column": 2, "row": 6, "icon": 5},
+	"crop_yield": {"name": "作物增产", "max": 10, "cost": {"coins": 10}, "needs": {}, "effect": "提高水稻和番茄每次收获的产量与收获金币；手动和自动收获均生效，种子仍返还1份", "column": 3, "row": 6, "icon": 3},
 	"layout": {"name": "整岛规划", "max": 1, "cost": {"coins": 300, "wood": 30, "stone": 40, "ore": 12}, "needs": {"terraform": 1, "development": 2}, "effect": "解锁整岛剪裁布局与三个阵型预设；应用布局需支付高额资源，按移动地块数计费", "column": 2, "row": 5, "icon": 5},
 	"reinforcement": {"name": "地块加固", "max": 5, "cost": {"coins": 10, "stone": 2}, "needs": {"development": 1}, "effect": "每级解锁 3 次地块加固，共 15 次；每次耐久上限 +20，地块费用逐级翻倍", "column": 0, "row": 7, "icon": 5},
 	"recycling": {"name": "地块回收", "max": 3, "cost": {"coins": 60, "stone": 8, "ore": 3}, "needs": {"terraform": 1}, "effect": "回收返还加固投入的 25% / 45% / 65%；未加固地块仅返还 1 石头", "column": 1, "row": 7, "icon": 5},
-	"harbor": {"name": "空岛港口", "max": 1, "cost": {"coins": 10000, "wood": 500, "stone": 400, "ore": 200}, "needs": {"docking": 2, "storage": 3}, "effect": "允许在浮岛外围建造唯一探索港口，供飞船停泊和充能", "column": 1, "row": 8, "icon": 4},
-	"exploration": {"name": "探索飞船", "max": 1, "cost": {"coins": 20000, "wood": 800, "ore": 500, "magma": 80}, "needs": {"harbor": 1, "engine": 3, "radar": 2}, "effect": "在港口建造唯一采矿飞船；以浮岛能源充能，负载降低飞行速度", "column": 2, "row": 8, "icon": 2},
+	"harbor": {"name": "空岛港口", "max": 1, "cost": {"coins": 10000, "wood": 500, "stone": 400, "ore": 200}, "needs": {"docking": 2, "storage": 3}, "effect": "允许在浮岛外围建造探索港口（数量不限），供飞船停泊和充能", "column": 1, "row": 8, "icon": 4},
+	"exploration": {"name": "探索飞船", "max": 3, "cost": {"coins": 20000, "wood": 800, "ore": 500, "magma": 80}, "needs": {"harbor": 1, "engine": 3, "radar": 2}, "effect": "I 解锁唯一飞船及普通岛采矿；II 允许大型岛；III 允许超级岛。以浮岛能源充能，负载降低飞行速度", "column": 2, "row": 8, "icon": 2},
 	"engine": {"name": "动力工程", "max": 3, "cost": {"coins": 25, "wood": 3, "ore": 1}, "needs": {}, "effect": "解锁引擎；每级增加 1 座上限并提高总推力 30%", "column": 0, "row": 0, "icon": 1},
 	"efficiency": {"name": "能耗优化", "max": 3, "cost": {"coins": 35, "ore": 1}, "needs": {"engine": 1}, "effect": "每级机械能耗 -15%，最多 -45%", "column": 1, "row": 0, "icon": 1},
 	"storage": {"name": "储能工程", "max": 3, "cost": {"coins": 25, "stone": 1}, "needs": {}, "effect": "解锁储能室；每级总储量 +20%", "column": 0, "row": 1, "icon": 4},
@@ -98,6 +105,14 @@ static func scaled_cost(cost: Dictionary, multiplier: int) -> Dictionary:
 	return result
 
 static func research_cost(key: String, current_level: int) -> Dictionary:
+	if key in ["gathering", "crop_yield"]:
+		var level := clampi(current_level, 0, 9)
+		var cost := {"coins": PRODUCTION_COINS[level]}
+		var materials: int = PRODUCTION_MATERIALS[level]
+		if level >= 1: cost.merge({"wood": materials, "stone": materials})
+		if level >= 3: cost.ore = materials / 2
+		if level >= 6: cost.magma = materials / 20
+		return cost
 	# Each upgrade consumes 1x, 3x, 9x ... of every resource in the base quote.
 	return scaled_cost(TECH[key].cost, int(pow(TECH_COST_GROWTH, current_level)))
 

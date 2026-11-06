@@ -36,7 +36,7 @@ func paused() -> bool:
 func toggle_map() -> void:
 	game.sky_map_open = not game.sky_map_open
 	if game.sky_map_open:
-		game.map_center = game.island_pos
+		game.map_center = game.explorer.position if game.follow_ship and game.explorer.built else game.island_pos
 		game.development.close_menu()
 		game.development.tile_menu.close()
 		game.guide_panel.hide()
@@ -63,7 +63,11 @@ func _input(event: InputEvent) -> void:
 		elif game.sky_map_open and event is InputEventMouseButton and event.pressed:
 			if event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
 				zoom_map(event.position, 1.2 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.2)
-			elif event.button_index == MOUSE_BUTTON_LEFT: game._set_map_destination(event.position)
+			elif event.button_index == MOUSE_BUTTON_LEFT:
+				if game.explorer.built and game.explorer.radar_rect().grow(4).has_point(event.position):
+					game.explorer.open_menu()
+					game._update_hud()
+				else: game._set_map_destination(event.position)
 			elif event.button_index == MOUSE_BUTTON_RIGHT:
 				game.map_destination_set = false
 				game.map_ink.queue_redraw()
@@ -101,6 +105,8 @@ func pan_map(direction: Vector2, delta: float) -> void:
 
 func hover_at(point: Vector2) -> Dictionary:
 	if not game.map_clip.get_global_rect().has_point(point): return {}
+	if game.explorer.built and game.explorer.radar_rect().grow(4).has_point(point):
+		return {"key": "ship", "text": "小飞船 · 点击管理\n" + game.explorer.status_text()}
 	var world: Vector2 = game._map_to_world(point)
 	if not game.development.tile_at(game.development.cell_at(world)).is_empty():
 		return {"key": "player", "text": "我的浮岛\n%d 格 · 质量 %.1f\n能源 %.0f / %.0f" % [game.island_tiles.size(), game.island_mass, game.energy, game.energy_capacity]}

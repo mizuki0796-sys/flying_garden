@@ -2,6 +2,7 @@
 .codex_tmp/
 artifacts/
 asset-library/
-docs/
+docs/*
+!docs/guides/
 tools/
 

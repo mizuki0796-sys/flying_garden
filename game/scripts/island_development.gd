@@ -92,7 +92,10 @@ func has_facility(kind: String) -> bool:
 	return facility_count(kind) > 0
 
 func crop_yield() -> int:
-	return 1
+	return Rules.PRODUCTION_MULTIPLIERS[int(tech.crop_yield)]
+
+func gathering_multiplier() -> int:
+	return Rules.PRODUCTION_MULTIPLIERS[int(tech.gathering)] * (2 if int(tech.development) >= 3 else 1)
 
 func forest_protection(cell: Vector2i) -> float:
 	var protection := 0.0
@@ -283,7 +286,7 @@ func gather(cell: Vector2i) -> bool:
 		message("林木尚未成熟，等待成长后再采集")
 		return false
 	var yield_values: Dictionary = Rules.YIELDS[tile.kind]
-	var multiplier := 2 if int(tech.development) >= 3 else 1
+	var multiplier := gathering_multiplier()
 	for key in yield_values: add_stock(key, int(yield_values[key]) * multiplier)
 	message("采集%s：%s" % [Rules.TERRAIN_NAMES[tile.kind], Rules.cost_text(Rules.scaled_cost(yield_values, multiplier))])
 	tile.kind = "grass"
@@ -325,7 +328,7 @@ func build(cell: Vector2i, kind: String) -> bool:
 	if kind == "power" and facility_count("power") >= int(tech.engine):
 		message("当前动力科技最多建造 %d 座引擎室" % int(tech.engine))
 		return false
-	if kind in ["grapple", "energy", "harbor"] and has_facility(kind):
+	if kind in ["grapple", "energy"] and has_facility(kind):
 		message("%s只能建造一座" % Rules.FACILITY_NAMES[kind])
 		return false
 	if kind == "harbor" and not game.land.is_edge(cell):
@@ -549,14 +552,11 @@ func survey(target: Dictionary) -> bool:
 	if game._hazard_clearance(terrain) > game.hook_max_distance + 200.0:
 		message("靠近岛屿后才能勘探（抓钩射程 +200 px）")
 		return false
-	if bool(terrain.get("surveyed", false)):
-		message(str(terrain.report))
-		return true
-	if not pay({"coins": 4 if int(tech.development) >= 3 else 8, "food": 1}): return false
+	if not bool(terrain.get("surveyed", false)) and not pay({"coins": 4 if int(tech.development) >= 3 else 8, "food": 1}): return false
 	var total: Dictionary = {}
 	for tile in terrain.tiles:
 		for key in Rules.YIELDS.get(tile.kind, {}):
-			total[key] = int(total.get(key, 0)) + int(Rules.YIELDS[tile.kind][key]) * (2 if int(tech.development) >= 3 else 1)
+			total[key] = int(total.get(key, 0)) + int(Rules.YIELDS[tile.kind][key]) * gathering_multiplier()
 	var value := 0
 	for key in total: value += int(total[key]) * int({"coins": 1, "wood": 3, "stone": 2, "ore": 5, "magma": 10, "food": 6, "rice_seeds": 2, "tomato_seeds": 4}[key])
 	terrain.surveyed = true
@@ -952,5 +952,5 @@ func tile_description(cell: Vector2i) -> String:
 	elif tile.kind == "farm":
 		text += "林木减灾 %d%% · %s\n" % [roundi(forest_protection(cell) * 100), "小屋管理中" if not farm_manager(cell).is_empty() else "手动管理"]
 		text += "B → 农田整平：2 金恢复普通土地，请先收获作物。\n"
-	elif tile.kind != "farm": text += "资源已采尽，可开发。\n" if bool(tile.get("depleted", false)) else "可采集：" + Rules.cost_text(Rules.YIELDS[tile.kind]) + "\n"
+	elif tile.kind != "farm": text += "资源已采尽，可开发。\n" if bool(tile.get("depleted", false)) else "可采集：" + Rules.cost_text(Rules.scaled_cost(Rules.YIELDS[tile.kind], gathering_multiplier())) + "\n"
 	return text + "右键地块操作 / T 科技"

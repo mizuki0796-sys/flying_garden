@@ -39,6 +39,8 @@ const ScaleRules = preload("res://scripts/scale_rules.gd")
 var development
 var land
 var explorer
+const IslandPhysics = preload("res://scripts/island_physics.gd")
+var harbor_visual = preload("res://scripts/harbor_visual.gd").new()
 var saves
 var sector_pool = preload("res://scripts/sector_pool.gd").new()
 var tile_index: Dictionary = {}
@@ -121,6 +123,8 @@ var navigation_view
 var map_scale := 0.16
 var map_center := island_pos
 var sky_map_open := false
+var follow_ship := false
+var ship_view_button: Button
 var map_destination := Vector2.ZERO
 var map_destination_set := false
 var autopilot_active := false
@@ -283,6 +287,9 @@ func _update_world_stream() -> void:
 		for x in range(sector.x - WorldLayout.ACTIVE_RADIUS, sector.x + WorldLayout.ACTIVE_RADIUS + 1):
 			wanted[Vector2i(x, y)] = true
 	# In-flight objects pin their source sector so pooled records never invalidate them.
+	for terrain in hazards:
+		if IslandPhysics.movable(terrain) and Vector2(terrain.get("velocity", Vector2.ZERO)).length() > 0.05:
+			wanted[terrain.get("world_key", sector)] = true
 	if not attached.is_empty() and attached.has("island"): wanted[attached.island.get("world_key", sector)] = true
 	if explorer != null and not explorer.target.is_empty(): wanted[explorer.target.get("world_key", sector)] = true
 	for key in world_sectors.keys():
@@ -385,7 +392,7 @@ func _physics_process(delta: float) -> void:
 
 	_update_world_stream()
 	_update_warning()
-	var drive_direction := manual_direction
+	var drive_direction := Vector2.ZERO if follow_ship and explorer.built else manual_direction
 	_apply_movement(delta, drive_direction, drive_direction.length_squared() > 0.01)
 	_update_focus_pan(delta)
 	_update_camera(delta)
@@ -395,12 +402,12 @@ func _physics_process(delta: float) -> void:
 	_update_crops(delta)
 	_update_hook(delta)
 	_update_targets(delta)
-	_check_collisions()
 	_tick_hud(delta)
 	queue_redraw()
 
 
 func _process(delta: float) -> void:
+	if explorer != null: explorer.update_ui()
 	if navigation_view != null:
 		navigation_view.update(delta)
 		if navigation_view.paused(): return
@@ -528,6 +535,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			if sky_map_open:
 				_set_map_destination(event.position)
+			elif explorer.built and Rect2(explorer.position - explorer.HULL * 0.5, explorer.HULL).has_point(_screen_to_world(event.position)):
+				if not follow_ship: _toggle_ship_view()
 			elif selected_tool == 2:
 				development.click(_screen_to_world(event.position))
 			elif selected_tool == TOOL_HOOK:
@@ -538,6 +547,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
 			if hook_state != HOOK_READY:
 				_cancel_hook()
+			elif not sky_map_open and development.tile_at(development.cell_at(_screen_to_world(event.position))).get("facility", "") == "harbor":
+				development.tile_menu.open_at(development.cell_at(_screen_to_world(event.position)))
 			elif selected_tool == 2 and development.action != "gather":
 				development.move_from = development.NONE
 				development.trim_pending = development.NONE
@@ -614,7 +625,17 @@ func _apply_movement(delta: float, direction: Vector2, wants_thrust: bool) -> vo
 		if consumed > 0.0:
 			_consume_energy(consumed, "浮岛推进")
 
-	island_pos += island_velocity * delta
+	# Bound displacement per step so fast islands cannot jump across a tile.
+	var fastest := island_velocity.length()
+	for terrain in hazards:
+		fastest = maxf(fastest, Vector2(terrain.get("velocity", Vector2.ZERO)).length())
+	var steps := maxi(1, ceili(fastest * delta / 16.0))
+	for step in range(steps):
+		island_pos += island_velocity * delta / steps
+		IslandPhysics.move_wild(hazards, delta / steps, movement_settings.drag_coefficient)
+		_check_collisions()
+		if explorer != null and explorer.built and explorer.state in ["manual", "outbound", "returning"] and not explorer.towed:
+			explorer.move_with_collisions(Vector2.ZERO)
 	if energy <= 0.0 and autopilot_active:
 		_cancel_autopilot("能源耗尽")
 	elif energy < movement_settings.autopilot_min_energy and autopilot_active:
@@ -641,19 +662,20 @@ func _cancel_autopilot(reason: String) -> void:
 	_set_autopilot_state("待机", reason)
 
 func _has_collision_trend(hazard: Dictionary) -> bool:
-	var speed: float = island_velocity.length()
+	var relative_velocity := island_velocity - Vector2(hazard.get("velocity", Vector2.ZERO))
+	var speed: float = relative_velocity.length()
 	if speed < 5.0:
 		return false
 	var offset: Vector2 = hazard.pos - island_pos
 	if offset.length_squared() < 0.01:
 		return true
-	var closing_speed: float = island_velocity.dot(offset.normalized())
+	var closing_speed: float = relative_velocity.dot(offset.normalized())
 	if closing_speed <= 3.0:
 		return false
-	var time_to_closest: float = offset.dot(island_velocity) / maxf(0.01, island_velocity.length_squared())
+	var time_to_closest: float = offset.dot(relative_velocity) / maxf(0.01, relative_velocity.length_squared())
 	if time_to_closest < 0.0 or time_to_closest > 6.0:
 		return false
-	var closest_offset: Vector2 = offset - island_velocity * time_to_closest
+	var closest_offset: Vector2 = offset - relative_velocity * time_to_closest
 	var island_radius: float = maxf(island_bounds.size.x, island_bounds.size.y) * 0.45
 	return closest_offset.length() <= float(hazard.radius) + island_radius + 24.0
 
@@ -726,6 +748,9 @@ func _warn_energy(reason: String) -> void:
 
 
 func _set_view_mode(mode: int, notice: String = "") -> void:
+	if follow_ship:
+		follow_ship = false
+		camera_world = island_pos
 	if view_mode == mode:
 		return
 	view_mode = mode
@@ -753,6 +778,19 @@ func _adjust_zoom(amount: float) -> void:
 	view_transition_left = movement_settings.view_transition_time
 
 
+func _toggle_ship_view() -> void:
+	if not explorer.built: return
+	var enable := not follow_ship
+	_set_view_mode(VIEW_GOD)
+	follow_ship = enable
+	camera_world = explorer.position if enable else island_pos
+	camera_zoom_target = 2.0 if enable else _default_player_zoom()
+	_show_notice("已接管采矿飞船：WASD 移动；再次点击飞船按钮返回主岛。" if enable else "已返回主岛视角")
+	development.close_menu()
+	development.tile_menu.close()
+	_update_hud()
+	queue_redraw()
+
 func _update_camera(delta: float) -> void:
 	if view_mode == VIEW_GOD:
 		camera_zoom_target = clampf(camera_zoom_target, _default_player_zoom(), movement_settings.focus_zoom_max)
@@ -760,6 +798,9 @@ func _update_camera(delta: float) -> void:
 	view_transition_left = maxf(0.0, view_transition_left - delta)
 	var zoom_speed := maxf(0.01, absf(camera_zoom_target - camera_zoom) / maxf(0.05, movement_settings.view_transition_time))
 	camera_zoom = move_toward(camera_zoom, camera_zoom_target, zoom_speed * delta)
+	if follow_ship and explorer.built:
+		camera_world = explorer.position
+		return
 	if view_mode == VIEW_FOCUS:
 		_clamp_focus_offset()
 		camera_world = island_pos + focus_offset
@@ -926,6 +967,9 @@ func _update_crops(delta: float) -> void:
 
 
 func _update_hook(delta: float) -> void:
+	if explorer.towed:
+		explorer.update_tow(delta)
+		return
 	var origin := _hook_origin()
 	if hook_state == HOOK_READY:
 		hook_pos = origin
@@ -933,6 +977,16 @@ func _update_hook(delta: float) -> void:
 
 	if hook_state == HOOK_EXTEND:
 		hook_pos += hook_dir * movement_settings.hook_extend_speed * delta
+		if explorer.stranded() and Rect2(explorer.position - Vector2(40, 32), Vector2(80, 64)).grow(4).has_point(hook_pos):
+			if explorer.port_ready():
+				explorer.towed = true
+				explorer.state = "returning"
+				hook_pos = explorer.position
+				_show_notice("抓住小飞船，正在拖回港口……")
+			else: _show_notice("救援需要完好的港口；飞船不能对接普通地块。")
+			hook_state = HOOK_RETRACT
+			grapple_state_changed.emit(hook_state)
+			return
 		for index in range(targets.size()):
 			var target: Dictionary = targets[index]
 			if bool(target.active) and _hook_hits_target(target):
@@ -945,6 +999,7 @@ func _update_hook(delta: float) -> void:
 				hooked_target = index
 				if target.has("island"):
 					target.island.tethered = true
+					target.island.velocity = Vector2.ZERO
 					hook_pos = target.pos
 				hook_state = HOOK_RETRACT
 				grapple_state_changed.emit(hook_state)
@@ -1043,21 +1098,26 @@ func _check_collisions() -> void:
 		var hit: Dictionary = IslandTiles.contact(island_tiles, island_pos, hazard.tiles, origin)
 		if hit.is_empty(): continue
 		var push: Vector2 = hit.normal
-		var impact_speed := maxf(0.0, -island_velocity.dot(push))
+		var hazard_velocity: Vector2 = hazard.get("velocity", Vector2.ZERO)
+		var impact_speed := maxf(0.0, -(island_velocity - hazard_velocity).dot(push))
+		var player_mass := island_mass
+		var hazard_mass := IslandTiles.mass(hazard.tiles)
+		var impulse := IslandPhysics.impulse(island_velocity, hazard_velocity, player_mass, hazard_mass, push)
+		island_velocity += impulse / player_mass
+		hazard.velocity = hazard_velocity - impulse / hazard_mass
 		if collision_cooldown <= 0.0 and impact_speed >= 35.0:
 			collision_cooldown = 2.0
-			var hazard_mass := IslandTiles.mass(hazard.tiles)
 			var collision_cost := minf(energy, 8.0 + impact_speed * 0.25 + hazard_mass * 0.5)
 			_consume_energy(collision_cost, "碰撞")
+			IslandPhysics.damage(hazard, hit.point, impact_speed, player_mass)
 			var removed: int = development.collision_at(hit.point, impact_speed, hazard_mass)
+			if removed == 0 and island_tiles.size() == 1: development.damage_at(hit.point, impact_speed)
 			if autopilot_active:
 				_cancel_autopilot("发生碰撞")
 			_show_notice("撞击崩落 %d 格；质量与速度越大，波及范围越大。" % removed, 5.0)
 		# Resolve actual penetration even at low speed or during the damage cooldown.
-		island_pos += push * (float(hit.depth) + 1.0) * 0.4
-		hazard.pos -= push * (float(hit.depth) + 1.0) * 0.6
-		if impact_speed > 0.0: island_velocity += push * impact_speed * 1.35
-		return
+		island_pos += push * (float(hit.depth) + 0.1) * hazard_mass / (player_mass + hazard_mass)
+		hazard.pos -= push * (float(hit.depth) + 0.1) * player_mass / (player_mass + hazard_mass)
 
 
 func _fire_hook(target_position: Vector2) -> void:
@@ -1442,6 +1502,11 @@ func _build_hud() -> void:
 	tools_row.add_theme_constant_override("separation", 3)
 	tool_sidebar.add_child(_with_margin(tools_row, 5))
 	tools_row.add_child(navigation_buttons)
+	ship_view_button = _make_icon_button("map", "小飞船视角")
+	ship_view_button.name = "ShipViewButton"
+	ship_view_button.icon = _atlas_region(load("res://assets/pixel_v2/vehicles/collector_cargo_empty.png"), Rect2(154, 128, 1094, 896))
+	ship_view_button.pressed.connect(_toggle_ship_view)
+	tools_row.add_child(ship_view_button)
 	hook_button = _make_tool_button("抓钩", 2)
 	hook_button.pressed.connect(func() -> void: _select_tool(TOOL_HOOK))
 	hook_button.custom_minimum_size = Vector2(100, 44)
@@ -1478,7 +1543,7 @@ func _build_hud() -> void:
 	save_button.icon = load("res://assets/ui/lucide/save.svg")
 	save_button.pressed.connect(func() -> void: saves.open_menu())
 	tools_row.add_child(save_button)
-	for button in navigation_buttons.get_children() + [hook_button, seed_button, tomato_button, gather_button, tech_button, save_button]:
+	for button in navigation_buttons.get_children() + [ship_view_button, hook_button, seed_button, tomato_button, gather_button, tech_button, save_button]:
 		button.text = ""
 		button.tooltip_text = ""
 		button.custom_minimum_size = Vector2(48, 32)
@@ -1513,6 +1578,7 @@ func _build_hud() -> void:
 	development.create_ui(root)
 	navigation_view = preload("res://scripts/navigation_view.gd").new()
 	navigation_view.setup(self, root)
+	explorer.setup_ui(root)
 	_build_intro(root)
 	saves.create_ui(root)
 	_update_tool_styles()
@@ -1542,7 +1608,7 @@ func _build_intro(root: Control) -> void:
 	box.add_child(subtitle)
 
 	var guide := Label.new()
-	guide.text = "先在岛上采集与种田，再研究动力工程建造引擎。\nB 开发 · T 科技 · 详细按键可在左上角随时展开。"
+	guide.text = "先在岛上采集与种田，再研究动力工程建造引擎。\nB 开发 · T 科技。"
 	guide.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	guide.add_theme_font_size_override("font_size", 15)
 	guide.add_theme_color_override("font_color", INK)
@@ -1896,6 +1962,9 @@ func _update_hud() -> void:
 		weather_risk.tooltip_text = "天气预报等级：强化天气增益、减轻天气损失"
 	navigation_buttons.tooltip_text = ""
 	map_button.modulate = Color("#ffda82") if sky_map_open else Color.WHITE
+	ship_view_button.disabled = not explorer.built
+	ship_view_button.modulate = Color("#ffda82") if follow_ship else Color.WHITE
+	ship_view_button.tooltip_text = "返回主岛视角" if follow_ship else ("驾驶小飞船 · WASD 移动 · 再次点击返回主岛" if explorer.built else "先建造探索飞船")
 	seed_button.text = ""
 	tomato_button.text = ""
 	for button in [map_button, seed_button, tomato_button, hook_button, fuel_button]:
@@ -2032,7 +2101,7 @@ func _draw() -> void:
 	_draw_targets()
 	_draw_islands()
 	_draw_hook()
-	if explorer != null: explorer.draw_ship()
+	if explorer != null: explorer.draw_status()
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	_draw_weather_effects()
 	_draw_night_lights()
@@ -2093,8 +2162,9 @@ func _draw_targets() -> void:
 
 func _island_draw_order() -> Array[int]:
 	var ordered: Array[int] = [-1]
-	if view_mode == VIEW_FOCUS: return ordered
+	if explorer != null and explorer.built: ordered.append(-2)
 	for index in range(hazards.size()):
+		if view_mode == VIEW_FOCUS: break
 		var hazard: Dictionary = hazards[index]
 		if not bool(hazard.active) or not _radar_visible(hazard.pos) or not _world_visible(hazard.pos, 200.0):
 			continue
@@ -2102,15 +2172,17 @@ func _island_draw_order() -> Array[int]:
 	# Wild island positions are footprint centers; use the same anchor for the player.
 	var player_y := island_pos.y + island_bounds.get_center().y
 	ordered.sort_custom(func(a: int, b: int) -> bool:
-		var ay: float = player_y if a == -1 else hazards[a].pos.y
-		var by: float = player_y if b == -1 else hazards[b].pos.y
+		var ay: float = explorer.position.y if a == -2 else (player_y if a == -1 else hazards[a].pos.y)
+		var by: float = explorer.position.y if b == -2 else (player_y if b == -1 else hazards[b].pos.y)
 		return a < b if ay == by else ay < by)
 	return ordered
 
 
 func _draw_islands() -> void:
 	for index in _island_draw_order():
-		if index == -1:
+		if index == -2:
+			explorer.draw_ship()
+		elif index == -1:
 			_draw_island()
 		else:
 			_draw_hazard(hazards[index])
@@ -2127,6 +2199,11 @@ func _draw_hazard(hazard: Dictionary) -> void:
 		IslandTiles.draw_shadow(self, p - bounds.get_center(), hazard.tiles)
 		IslandTiles.draw_ground(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, terrain_textures)
 	IslandTiles.draw_decor(self, p - bounds.get_center(), hazard.tiles, IslandTiles.CELL_SIZE, int(hazard.biome) == 1, tree_texture, true, animation_time, wind_strength, _tree_pointer())
+	for tile in hazard.tiles:
+		if float(tile.get("hp", 100.0)) < 100.0:
+			var center := p - bounds.get_center() + Vector2(tile.cell) * IslandTiles.CELL_SIZE
+			draw_rect(Rect2(center + Vector2(-28, 22), Vector2(56, 5)), INK)
+			draw_rect(Rect2(center + Vector2(-28, 22), Vector2(56 * float(tile.hp) / 100.0, 5)), Color("#e69a4b"))
 
 
 func _draw_island() -> void:
@@ -2137,6 +2214,9 @@ func _draw_island() -> void:
 		IslandTiles.draw_shadow(self, p, island_tiles)
 		IslandTiles.draw_ground(self, p, island_tiles, IslandTiles.CELL_SIZE, terrain_textures)
 
+	# Low harbor decks sit below tree canopies.
+	for tile in ordered_tiles:
+		if tile.facility == "harbor": _draw_harbor(self, IslandTiles.cell_rect(p, tile.cell).get_center(), tile.cell, island_tiles)
 	var ordered := ordered_tiles
 	var plot_indices: Dictionary = {}
 	for index in range(plots.size()):
@@ -2160,8 +2240,6 @@ func _draw_island() -> void:
 			_draw_building(energy_conversion_texture, center + Vector2(6, 20), 88.0, facility)
 		elif facility == "power":
 			_draw_building(power_hut_texture, center + Vector2(0, 20), 92.0, facility)
-		elif facility == "harbor":
-			_draw_harbor(self, center)
 		elif facility == "farm_hut":
 			_draw_building(farm_hut_texture(tile), center + Vector2(0, 20), 80.0, "farm_hut")
 		if facility != "":
@@ -2199,10 +2277,8 @@ func _draw_management_range() -> void:
 	points.append(points[0])
 	draw_polyline(points, Color("#a7f0ad"), 2.0)
 
-func _draw_harbor(canvas: Node2D, center: Vector2) -> void:
-	canvas.draw_rect(Rect2(center + Vector2(-34, -12), Vector2(68, 35)), Color("#837351"))
-	for pier in range(5): canvas.draw_line(center + Vector2(-28 + pier * 14, -12), center + Vector2(-28 + pier * 14, 23), Color("#c7b28a"), 3.0)
-	canvas.draw_arc(center, 22, 0, TAU, 24, Color("#a7dfe5"), 2.0)
+func _draw_harbor(canvas: Node2D, center: Vector2, cell: Vector2i, tiles: Array) -> void:
+	harbor_visual.draw(canvas, center, harbor_visual.outward(cell, tiles))
 
 func _draw_building(texture: Texture2D, bottom_center: Vector2, width: float, kind := "water", canvas: Node2D = self) -> void:
 	var source_size := water_grain_hut_texture.get_size() if kind == "energy" else texture.get_size()
@@ -2466,6 +2542,12 @@ func _draw_sky_map_content() -> void:
 		map_ink.draw_rect(rect.grow(-0.4), Color("#acd98a"))
 	map_ink.draw_circle(island_map_position, 7.0, Color("#335f68"))
 	map_ink.draw_circle(island_map_position, 7.0, Color.WHITE, false, 2.0)
+	if explorer.built:
+		explorer.ensure_visual()
+		var ship_rect: Rect2 = explorer.radar_rect()
+		map_ink.draw_texture_rect(explorer.visual.texture, ship_rect, false)
+		map_ink.draw_rect(ship_rect.grow(2), Color("#ffb56b") if explorer.stranded() else Color("#dff5ed"), false, 1.0)
+		map_ink.draw_string(ThemeDB.fallback_font, ship_rect.position + Vector2(0, -7), "小飞船 · " + ("待救援" if explorer.stranded() else "%d E" % explorer.charge), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.WHITE)
 	if map_destination_set:
 		var destination_screen := _world_to_map(map_destination)
 		_draw_dashed_line(island_map_position, destination_screen, Color("#ffe47a"), 10.0, 5.0, 2.0, map_ink)
