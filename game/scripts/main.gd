@@ -1608,7 +1608,7 @@ func _build_intro(root: Control) -> void:
 	box.add_child(subtitle)
 
 	var guide := Label.new()
-	guide.text = "先在岛上采集与种田，再研究动力工程建造引擎。\nB 开发 · T 科技 · 详细按键可在左上角随时展开。"
+	guide.text = "先在岛上采集与种田，再研究动力工程建造引擎。\nB 开发 · T 科技。"
 	guide.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	guide.add_theme_font_size_override("font_size", 15)
 	guide.add_theme_color_override("font_color", INK)
@@ -2101,7 +2101,7 @@ func _draw() -> void:
 	_draw_targets()
 	_draw_islands()
 	_draw_hook()
-	if explorer != null: explorer.draw_ship()
+	if explorer != null: explorer.draw_status()
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	_draw_weather_effects()
 	_draw_night_lights()
@@ -2162,8 +2162,9 @@ func _draw_targets() -> void:
 
 func _island_draw_order() -> Array[int]:
 	var ordered: Array[int] = [-1]
-	if view_mode == VIEW_FOCUS: return ordered
+	if explorer != null and explorer.built: ordered.append(-2)
 	for index in range(hazards.size()):
+		if view_mode == VIEW_FOCUS: break
 		var hazard: Dictionary = hazards[index]
 		if not bool(hazard.active) or not _radar_visible(hazard.pos) or not _world_visible(hazard.pos, 200.0):
 			continue
@@ -2171,15 +2172,17 @@ func _island_draw_order() -> Array[int]:
 	# Wild island positions are footprint centers; use the same anchor for the player.
 	var player_y := island_pos.y + island_bounds.get_center().y
 	ordered.sort_custom(func(a: int, b: int) -> bool:
-		var ay: float = player_y if a == -1 else hazards[a].pos.y
-		var by: float = player_y if b == -1 else hazards[b].pos.y
+		var ay: float = explorer.position.y if a == -2 else (player_y if a == -1 else hazards[a].pos.y)
+		var by: float = explorer.position.y if b == -2 else (player_y if b == -1 else hazards[b].pos.y)
 		return a < b if ay == by else ay < by)
 	return ordered
 
 
 func _draw_islands() -> void:
 	for index in _island_draw_order():
-		if index == -1:
+		if index == -2:
+			explorer.draw_ship()
+		elif index == -1:
 			_draw_island()
 		else:
 			_draw_hazard(hazards[index])

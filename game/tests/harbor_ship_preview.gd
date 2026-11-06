@@ -133,7 +133,7 @@ func capture_states() -> void:
 	var anchor: Vector2 = ship.dock_position()
 	game.camera_world = anchor + Vector2(-45, -15)
 	game.camera_zoom = 3.0
-	for amount in [0, 12, 24]:
+	for amount in [0, ship.capacity() / 2, ship.capacity()]:
 		ship.cargo = {"ore": amount}
 		await capture("cargo-%02d" % amount)
 		for step in range(15):

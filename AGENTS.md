@@ -8,7 +8,9 @@
 
 ## 复杂 UI 与动画
 
-后续涉及建筑、设施、机械部件、复杂 UI 的生成、拆分或动画时，先读取项目根目录 `COMPLEX_UI_ANIMATION_GUIDE.md`，按 `game/art_templates/complex_ui/BRIEF.md` 明确范围。
+指导文档统一存放在 `docs/guides/`，总目录见 `docs/guides/README.md`；新增指导文件放入对应子目录。本文件保留在项目根目录，以便自动读取项目约定。
+
+后续涉及建筑、设施、机械部件、复杂 UI 的生成、拆分或动画时，先读取 `docs/guides/COMPLEX_UI_ANIMATION_GUIDE.md`，按 `docs/guides/complex_ui/BRIEF.md` 明确范围。
 
 以用户最新要求为准。只允许变化被指定的部件；其余原图和已确认特效保持不变。不可因套用模板而擅自新增灯、连杆、抖动、烟雾效果或运行状态。
 

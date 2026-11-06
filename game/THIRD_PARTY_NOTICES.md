@@ -35,5 +35,5 @@
 - 文件：`facilities/engine_room_layers_v1/body.png`、`flywheel.png`。
 - 来源：OpenAI 内置 ImageGen 基于原动力室 PNG 拆分、补绘；提示词随素材保存在 `prompts.json`。
 - 使用方式：仅独立飞轮参与旋转；补绘 `body.png` 已停用。固定连接件和可见墙面保留原图，旧轮轮廓通过原图暗部取样修复；烟雾仍使用原有绘制代码。
-- 制作与导出规范：项目根目录 `COMPLEX_UI_ANIMATION_GUIDE.md`。
+- 制作与导出规范：`docs/guides/COMPLEX_UI_ANIMATION_GUIDE.md`。
 

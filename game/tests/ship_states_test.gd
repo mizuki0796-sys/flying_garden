@@ -50,9 +50,9 @@ func run() -> void:
 	ship.charge = 500.0
 	check(not ship.launch(), "Only locked islands means no launch")
 	dev.tech.exploration = 3
-	for amount in [0, 1, 23, 24]:
+	for amount in [0, 1, 239, 240]:
 		ship.cargo = {"ore": amount}
-		check(ship.cargo_state() == (0 if amount == 0 else (2 if amount == 24 else 1)), "Cargo boundary %d" % amount)
+		check(ship.cargo_state() == (0 if amount == 0 else (2 if amount == 240 else 1)), "Cargo boundary %d" % amount)
 		var saved: Dictionary = ship.snapshot()
 		ship.cargo = {}
 		ship.restore(saved)

@@ -85,8 +85,8 @@ func run() -> void:
 	ship.dock_offset = ship.position - Vector2(ship.target.pos)
 	ship.mining_left = ship.mining_interval()
 	ship.update(0.11)
-	check(ship.load_weight() == 24 and ship.state == "returning", "Low frame rate processes full mining speed, stops at capacity")
-	check(not ship.target.tiles[3].depleted and ship.charge == 464.0, "Mining keeps per-deposit yield and energy cost")
+	check(ship.load_weight() == 24 and ship.state == "mining", "Low frame rate processes three batches without filling expanded capacity")
+	check(not ship.target.tiles[3].depleted and is_equal_approx(ship.charge, 496.4), "Mining keeps per-deposit yield and energy cost")
 	ship.built = false
 	ship.state = "docked"
 	ship.target = {}

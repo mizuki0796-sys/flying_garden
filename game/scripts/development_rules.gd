@@ -46,7 +46,7 @@ const TECH_COST_GROWTH := 3
 const PRODUCTION_MULTIPLIERS := [1, 2, 3, 5, 8, 12, 18, 27, 40, 60, 90]
 const PRODUCTION_COINS := [10, 30, 90, 300, 1000, 3500, 12000, 45000, 160000, 600000]
 const PRODUCTION_MATERIALS := [0, 2, 5, 15, 40, 120, 350, 1000, 3000, 10000]
-const SHIP_CAPACITIES := [24, 40, 64, 100, 150, 220, 320, 450, 600, 800, 1000]
+const SHIP_CAPACITIES := [240, 400, 640, 1000, 1500, 2200, 3200, 4500, 6000, 8000, 10000]
 # Emergency imports cost considerably more than locally gathered materials.
 const MINERAL_BUY_PRICES := {"stone": 10, "ore": 35, "magma": 90}
 
@@ -59,7 +59,7 @@ const TECH_ORDER := [
 	"reinforcement", "recycling", "harbor", "exploration", "ship_capacity", "layout"
 ]
 const TECH := {
-	"ship_capacity": {"name": "飞船扩容", "max": 10, "cost": {"coins": 1000, "wood": 20, "ore": 10}, "needs": {"exploration": 1}, "effect": "扩充货舱至最高1000份，同时降低采矿能耗；按满载比例减速，电池仍为500。货满返港", "column": 3, "row": 8, "icon": 4},
+	"ship_capacity": {"name": "飞船扩容", "max": 10, "cost": {"coins": 1000, "wood": 20, "ore": 10}, "needs": {"exploration": 1}, "effect": "扩充货舱至最高10000份，同时降低采矿能耗；按满载比例减速，电池仍为500。货满返港", "column": 3, "row": 8, "icon": 4},
 	"gathering": {"name": "高效采集", "max": 10, "cost": {"coins": 10}, "needs": {}, "effect": "提高地面采集产量、缩短飞船采矿间隔；十级最高90倍。飞船货舱容量不变", "column": 2, "row": 6, "icon": 5},
 	"crop_yield": {"name": "作物增产", "max": 10, "cost": {"coins": 10}, "needs": {}, "effect": "提高水稻和番茄每次收获的产量与收获金币；手动和自动收获均生效，种子仍返还1份", "column": 3, "row": 6, "icon": 3},
 	"layout": {"name": "整岛规划", "max": 1, "cost": {"coins": 300, "wood": 30, "stone": 40, "ore": 12}, "needs": {"terraform": 1, "development": 2}, "effect": "解锁整岛剪裁布局与三个阵型预设；应用布局需支付高额资源，按移动地块数计费", "column": 2, "row": 5, "icon": 5},

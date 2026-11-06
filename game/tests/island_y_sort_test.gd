@@ -5,9 +5,14 @@ const OUT := "res://../artifacts/game/island-y-sort/"
 
 class Probe extends "res://scripts/main.gd":
 	var drawn: Array[int] = []
+	var ship_on_top_baseline := false
 	func _draw_islands() -> void:
 		drawn.clear()
+		if ship_on_top_baseline: explorer.built = false
 		super._draw_islands()
+		if ship_on_top_baseline:
+			explorer.built = true
+			explorer.draw_ship()
 	func _draw_island() -> void:
 		drawn.append(-1)
 		super._draw_island()
@@ -35,7 +40,7 @@ func capture(name: String) -> void:
 	await process_frame
 	if DisplayServer.get_name() == "headless": return
 	await RenderingServer.frame_post_draw
-	check(game.drawn == game._island_draw_order(), "Actual rendering follows island Y order")
+	check(game.drawn == game._island_draw_order().filter(func(index): return index != -2), "Actual rendering follows island Y order")
 	check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path(OUT + name + ".png")) == OK, "Screenshot saved")
 
 func run() -> void:
@@ -103,5 +108,26 @@ func run() -> void:
 	game.camera_world = game.island_pos + Vector2(285, 0)
 	game.camera_zoom = 1.65
 	await capture("06-wild-island-overlap-closeup")
+	game.hazards = [island(Vector2(300, 0), 0, 0)]
+	game.explorer.built = true
+	game.explorer.state = "manual"
+	game.explorer.position = game.island_pos + Vector2(300, -130)
+	check(game._island_draw_order() == [-2, -1, 0], "Ship behind forest draws before tree canopies")
+	game.camera_world = game.island_pos + Vector2(300, -65)
+	game.camera_zoom = 2.0
+	for optimized in [false, true]:
+		game.optimized_rendering = optimized
+		await capture("07-ship-behind-forest-" + ("cached" if optimized else "original"))
+	game.ship_on_top_baseline = true
+	await capture("08-ship-on-top-baseline")
+	game.ship_on_top_baseline = false
+	game.explorer.position.y = game.island_pos.y
+	check(game._island_draw_order() == [-2, -1, 0], "Equal Y keeps trees above ship")
+	game.explorer.position.y += 200
+	check(game._island_draw_order() == [-1, 0, -2], "Ship in foreground follows Y order")
+	game.view_mode = game.VIEW_FOCUS
+	check(game._island_draw_order() == [-1, -2], "Focus view preserves ship and excludes wild islands")
+	game.explorer.built = false
+	check(game._island_draw_order() == [-1], "Unbuilt ship never enters draw order")
 	print("ISLAND Y SORT: %d failures" % failures)
 	quit(1 if failures else 0)

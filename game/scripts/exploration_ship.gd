@@ -663,6 +663,9 @@ func draw_ship() -> void:
 		game.draw_rect(Rect2(origin, Vector2.ONE * (size - 1.0)), Color(0.91, 0.93, 0.92, alpha))
 	ensure_visual()
 	game.draw_texture_rect(visual_viewport.get_texture(), Rect2(position - Vector2(40, 32), Vector2(80, 64)), false)
+
+func draw_status() -> void:
+	if not built: return
 	if game.follow_ship:
 		game.draw_rect(Rect2(position + Vector2(-40, -70), Vector2(80, 35)), Color("#493e38"))
 		game.draw_string(ThemeDB.fallback_font, position + Vector2(-38, -59), "血量 %.0f / %.0f" % [hp, MAX_HP], HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color("#fff5dc"))

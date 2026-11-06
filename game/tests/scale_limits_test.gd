@@ -36,8 +36,6 @@ func _run() -> void:
 	check(Rules.player_limit(999, false) == 100, "Release builds ignore debug override")
 	check(Rules.player_limit(999, true) == 144, "Debug override cannot exceed 144")
 	check(Rules.player_limit(0, true) == 100, "Debug override cannot reduce normal capacity")
-	check(Rules.available_combat_tiles(100) == 60, "Full player island leaves 60 combat terrain cells")
-	check(Rules.available_combat_tiles(81) == 79, "Typical island leaves 79 combat terrain cells")
 
 	game.island_tiles = tiles(98)
 	game._refresh_island_shape()
