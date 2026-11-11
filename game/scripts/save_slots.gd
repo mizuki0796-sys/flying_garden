@@ -1,8 +1,10 @@
 extends RefCounted
 
 const Rules = preload("res://scripts/development_rules.gd")
+const Ring = preload("res://scripts/ring_wall.gd")
+const LegacyWall = preload("res://scripts/thick_wall.gd")
 const COUNT := 5
-const VERSION := 1
+const VERSION := 2
 const FIELDS := ["island_pos", "world_origin", "island_velocity", "energy", "coins", "rice_seeds", "tomato_seeds", "rice_stock", "energy_crop_stock", "harvested", "gathered", "day_minutes", "day_number", "weather_elapsed", "weather_refresh", "weather_tint", "lightning_left", "lightning_next", "weather_hazard_left", "merchant_arrival_left", "merchant_stay_left", "merchant_available", "collision_cooldown", "worker_slow_time", "control_stun_time", "emergency_braking", "view_mode", "selected_tool", "camera_world", "camera_zoom", "camera_zoom_target", "focus_offset", "map_destination", "map_destination_set", "autopilot_active", "autopilot_state", "autopilot_reason", "hook_state", "hook_pos", "hook_dir", "hook_dangle_left", "hook_launch_energy_paid", "hook_fixing_left", "merge_offset"]
 var game
 var directory := "user://saves"
@@ -31,13 +33,19 @@ func snapshot() -> Dictionary:
 		"tiles": game.island_tiles.duplicate(true), "plots": game.plots.duplicate(true),
 		"tech": game.development.tech.duplicate(), "materials": game.development.materials.duplicate(),
 		"layout_presets": game.development.layout.presets.duplicate(true),
+		"wall": game.wall.snapshot(),
 		"fuel_source": game.development.fuel_source, "energy_cycle": game.development.energy_cycle_left,
 		"farm_cycle": game.development.farm_cycle_left, "selected_crop": game.development.selected_crop, "action": game.development.action,
 		"sectors": game.sector_pool.snapshot(game.world_sectors), "hooked": hooked,
 		"weather_rng": game.weather_rng.state, "ship": game.explorer.snapshot()}
 
 func validate(data: Variant) -> bool:
-	if not data is Dictionary or data.get("version", -1) != VERSION: return false
+	if not data is Dictionary or data.get("version", -1) not in [1, VERSION]: return false
+	if data.has("wall"):
+		if not data.wall is Dictionary: return false
+		if data.wall.has("geometry"):
+			if not Ring.valid_ring(data.wall): return false
+		elif not LegacyWall.valid(data.wall): return false
 	for key in ["state", "tech", "materials", "sectors", "hooked", "ship"]:
 		if not data.get(key) is Dictionary: return false
 	if not data.get("tiles") is Array or not data.get("plots") is Array or data.tiles.is_empty(): return false
@@ -69,7 +77,9 @@ func validate(data: Variant) -> bool:
 			if not tile.layout_id is int or tile.layout_id <= 0 or layout_ids.has(tile.layout_id): return false
 			layout_ids[tile.layout_id] = true
 		cells[tile.cell] = tile
-	if not cells.has(Vector2i.ZERO): return false
+	var cores: Array = data.tiles.filter(func(tile): return tile.get("core", false))
+	if cores.size() > 1 or (cores.size() == 1 and cores[0].facility != "water"): return false
+	if data.version >= 2 and cores.size() != 1: return false
 	var plots_seen: Dictionary = {}
 	for plot in data.plots:
 		if not plot is Dictionary or not plot.get("cell") is Vector2i or not cells.has(plot.cell): return false
@@ -121,6 +131,7 @@ func validate(data: Variant) -> bool:
 
 func valid_tile(tile: Variant) -> bool:
 	if not tile is Dictionary or not tile.get("cell") is Vector2i: return false
+	if tile.has("core") and not tile.core is bool: return false
 	if not Rules.TERRAIN_NAMES.has(tile.get("kind", "")): return false
 	if tile.get("facility", "invalid") != "" and not Rules.FACILITY_NAMES.has(tile.get("facility")): return false
 	if not tile.get("hp") is float or not is_finite(tile.hp) or tile.hp < 0 or tile.hp > Rules.tile_max_hp(tile): return false
@@ -185,6 +196,10 @@ func load_slot(slot: int) -> bool:
 	game.sector_pool.free_records.clear()
 	game.sector_pool.journal = packet.sectors.duplicate(true)
 	for key in FIELDS: game.set(key, packet.state[key])
+	var wall_data: Dictionary = packet.get("wall", {})
+	if game.wall is Ring: game.wall.dispose()
+	game.wall = Ring.new(game) if wall_data.has("geometry") else LegacyWall.new(game)
+	game.wall.restore(wall_data)
 	# Old saves may contain an active route. Restore its marker, never its driver.
 	game._cancel_autopilot("手动驾驶")
 	game.view_mode = game.VIEW_GOD
@@ -194,6 +209,18 @@ func load_slot(slot: int) -> bool:
 	game.map_center = game.island_pos
 	game.island_tiles = packet.tiles.duplicate(true)
 	game.plots = packet.plots.duplicate(true)
+	if packet.version == 1 and game.IslandTiles.core_cell(game.island_tiles) == Vector2i.MAX:
+		var stations: Array = game.island_tiles.filter(func(tile): return tile.facility == "water")
+		if not stations.is_empty():
+			var original := stations.filter(func(tile): return tile.cell == Vector2i(-1, -2))
+			var core: Dictionary = stations.front() if original.is_empty() else original.front()
+			core.core = true
+	game.island_tiles = game.island_tiles.filter(func(tile): return tile.hp > 0.0)
+	if game.IslandTiles.core_cell(game.island_tiles) == Vector2i.MAX:
+		close()
+		game.end_game()
+		return true
+	game.development.prune_disconnected()
 	game.development.tech = packet.tech.duplicate()
 	if not game.development.tech.has("layout"): game.development.tech.layout = 0
 	for key in ["gathering", "crop_yield", "ship_capacity"]:

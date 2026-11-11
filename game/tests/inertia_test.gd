@@ -26,6 +26,7 @@ func run() -> void:
 	root.add_child(game)
 	await process_frame
 	game._start_demo()
+	game.wall.enabled = false # Synthetic collision fixtures use coordinates occupied by the new wall.
 	game.set_process(false)
 	game.set_physics_process(false)
 	game.hazards = []
@@ -87,6 +88,8 @@ func run() -> void:
 	check(a.tiles[0].hp < 100.0 and b.tiles[0].hp < 100.0, "Wild islands both take high-speed damage")
 	check(b.velocity.x > 0, "Wild island collision transfers motion")
 	game.island_tiles = [tile(), tile(Vector2i(0, 1))]
+	game.island_tiles[1].facility = "water"
+	game.island_tiles[1].core = true
 	game._refresh_island_shape()
 	game.island_pos = Vector2.ZERO
 	game.island_velocity = Vector2.ZERO
@@ -99,7 +102,12 @@ func run() -> void:
 	game.island_tiles = [tile()]
 	game._refresh_island_shape()
 	game.island_pos = Vector2.ZERO
+	var core := tile(Vector2i.LEFT)
+	core.facility = "water"
+	core.core = true
+	game.island_tiles.append(core)
 	game.island_tiles[0].facility = "power"
+	game._refresh_island_shape()
 	game.development.tech.engine = 1
 	game.movement_settings.base_thrust = 240.0
 	game.island_velocity = Vector2(1000, 0)

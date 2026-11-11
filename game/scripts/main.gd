@@ -40,6 +40,7 @@ var development
 var land
 var explorer
 const IslandPhysics = preload("res://scripts/island_physics.gd")
+const GUIDE_TEXT := "WASD 驾驶　Space 急停　M 地图\n滚轮缩放　R 能源厂　B 开发 / T 科技\n左侧选工具 · 右键地块操作 · F5 存档\n指向未连接岛屿按 E 查看 · E/Esc 收起"
 var harbor_visual = preload("res://scripts/harbor_visual.gd").new()
 var saves
 var sector_pool = preload("res://scripts/sector_pool.gd").new()
@@ -84,6 +85,7 @@ const PLOT_READY := Color("#f2ba43")
 var island_pos := Vector2(575.0, 350.0)
 var world_origin := island_pos
 var island_velocity := Vector2.ZERO
+var wall
 var island_mass := 28.0
 var engine_level := 1
 var inertia_damping_level := 0
@@ -198,6 +200,7 @@ var seed_button: Button
 var tomato_button: Button
 var gather_button: Button
 var tool_sidebar: PanelContainer
+var game_over := false
 var intro_panel: PanelContainer
 var guide_panel: PanelContainer
 var guide_body: Label
@@ -218,6 +221,7 @@ func _ready() -> void:
 	icon_atlas = load("res://assets/ui/farm_ui_icons.png")
 	hud_icon_atlas = load("res://assets/ui/hud_icons.svg")
 	_load_pixel_v2_assets()
+	wall = preload("res://scripts/ring_wall.gd").new(self)
 	_initialize_world()
 	development = Development.new(self)
 	land = preload("res://scripts/land_systems.gd").new(self)
@@ -302,8 +306,10 @@ func _update_world_stream() -> void:
 	for key in wanted:
 		if not world_sectors.has(key): world_sectors[key] = sector_pool.acquire(key, world_origin)
 		var content: Dictionary = world_sectors[key]
-		hazards.append_array(content.hazards)
-		targets.append_array(content.island_targets)
+		for index in range(content.hazards.size()):
+			if not content.hazards[index].tiles.is_empty() and wall.keep_terrain(content.hazards[index]):
+				hazards.append(content.hazards[index])
+				targets.append(content.island_targets[index])
 	if not attached.is_empty():
 		hooked_target = targets.find(attached)
 		if hooked_target < 0:
@@ -380,6 +386,7 @@ func _physics_process(delta: float) -> void:
 	development.update(delta)
 	land.update_trees(delta)
 	explorer.update(delta)
+	if game_over: return
 	collision_cooldown = maxf(0.0, collision_cooldown - delta)
 	worker_slow_time = maxf(0.0, worker_slow_time - delta)
 	control_stun_time = maxf(0.0, control_stun_time - delta)
@@ -394,11 +401,13 @@ func _physics_process(delta: float) -> void:
 	_update_warning()
 	var drive_direction := Vector2.ZERO if follow_ship and explorer.built else manual_direction
 	_apply_movement(delta, drive_direction, drive_direction.length_squared() > 0.01)
+	if game_over: return
 	_update_focus_pan(delta)
 	_update_camera(delta)
 
 	_update_zones(delta)
 	_update_weather_hazards(delta)
+	if game_over: return
 	_update_crops(delta)
 	_update_hook(delta)
 	_update_targets(delta)
@@ -634,8 +643,13 @@ func _apply_movement(delta: float, direction: Vector2, wants_thrust: bool) -> vo
 		island_pos += island_velocity * delta / steps
 		IslandPhysics.move_wild(hazards, delta / steps, movement_settings.drag_coefficient)
 		_check_collisions()
+		if game_over: return
+		wall.collide_terrain()
+		wall.collide_island()
+		if game_over: return
 		if explorer != null and explorer.built and explorer.state in ["manual", "outbound", "returning"] and not explorer.towed:
 			explorer.move_with_collisions(Vector2.ZERO)
+			if game_over: return
 	if energy <= 0.0 and autopilot_active:
 		_cancel_autopilot("能源耗尽")
 	elif energy < movement_settings.autopilot_min_energy and autopilot_active:
@@ -913,14 +927,22 @@ func _update_weather_hazards(delta: float) -> void:
 	if kind == "cyclone":
 		var mitigation: float = development.weather_damage_factor(plot.cell)
 		development.damage_cell(plot.cell, 28.0 * mitigation, "飓风破坏", false)
+		if development.tile_at(plot.cell).is_empty(): return
 		if int(plot.state) != 0:
 			plot.progress = maxf(0.0, float(plot.progress) - 0.35 * mitigation)
-			plot.state = 0 if float(development.tile_at(plot.cell).hp) <= 0.0 else 1
+			plot.state = 1
 		_show_notice("飓风损伤农田并损失作物进度；林木减灾 %d%%，仍需修缮。" % roundi(development.forest_protection(plot.cell) * 100), 4.0)
 	else:
 		_show_notice("积雪覆盖了一块农田；离开雪区后减速效果解除。", 3.0)
 
 func _update_merchant(delta: float) -> void:
+	if wall.enabled and wall.beyond_inner(island_pos):
+		if merchant_available:
+			merchant_available = false
+			merchant_stay_left = 0.0
+			merchant_arrival_left = 210.0
+			development.merchant_state_changed()
+		return
 	if merchant_available:
 		merchant_stay_left -= delta
 		if merchant_stay_left <= 0.0:
@@ -1111,7 +1133,7 @@ func _check_collisions() -> void:
 			_consume_energy(collision_cost, "碰撞")
 			IslandPhysics.damage(hazard, hit.point, impact_speed, player_mass)
 			var removed: int = development.collision_at(hit.point, impact_speed, hazard_mass)
-			if removed == 0 and island_tiles.size() == 1: development.damage_at(hit.point, impact_speed)
+			if game_over: return
 			if autopilot_active:
 				_cancel_autopilot("发生碰撞")
 			_show_notice("撞击崩落 %d 格；质量与速度越大，波及范围越大。" % removed, 5.0)
@@ -1155,7 +1177,7 @@ func _finish_hook() -> void:
 		if target.has("island"):
 			var capacity_reason := _island_capacity_reason(target)
 			if not capacity_reason.is_empty():
-				_release_over_capacity_target(target, capacity_reason)
+				_release_hook_target(target, capacity_reason)
 				return
 			for tile in target.island.tiles:
 				var added: Dictionary = tile.duplicate(true)
@@ -1206,8 +1228,9 @@ func _island_capacity_reason(target: Dictionary) -> String:
 	return ""
 
 
-func _release_over_capacity_target(target: Dictionary, reason: String) -> void:
-	target.island.tethered = false
+func _release_hook_target(target: Dictionary, reason: String) -> void:
+	if target.has("island"): target.island.tethered = false
+	explorer.towed = false
 	hooked_target = -1
 	hook_state = HOOK_READY
 	hook_fixing_left = 0.0
@@ -1234,7 +1257,7 @@ func _target_lock_reason(target: Dictionary) -> String:
 func _begin_island_attachment(target: Dictionary) -> void:
 	var capacity_reason := _island_capacity_reason(target)
 	if not capacity_reason.is_empty():
-		_release_over_capacity_target(target, capacity_reason)
+		_release_hook_target(target, capacity_reason)
 		return
 	if bool(target.island.get("shop", false)):
 		target.island.tethered = false
@@ -1465,7 +1488,9 @@ func _build_hud() -> void:
 	)
 	guide_header.add_child(guide_toggle)
 	guide_body = Label.new()
-	guide_body.text = "WASD 驾驶　Space 急停　M 地图\n滚轮缩放　R 能源厂　B 开发 / T 科技\n左侧选工具 · 右键地块操作 · F5 存档\n指向未连接岛屿按 E 查看 · E/Esc 收起"
+	guide_body.text = GUIDE_TEXT
+	guide_body.custom_minimum_size.x = 300
+	guide_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	guide_body.add_theme_font_size_override("font_size", 12)
 	guide_body.add_theme_color_override("font_color", Color("#624635"))
 	guide_body.visible = true
@@ -1638,10 +1663,38 @@ func _build_intro(root: Control) -> void:
 	box.add_child(footer)
 
 
+func end_game() -> void:
+	if game_over: return
+	game_over = true
+	demo_started = false
+	island_tiles.clear()
+	plots.clear()
+	selected_plot = -1
+	hovered_plot = -1
+	_refresh_island_shape()
+	intro_panel.get_parent().hide()
+	var overlay := CenterContainer.new()
+	get_node("HUD").add_child(overlay)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var box := VBoxContainer.new()
+	overlay.add_child(box)
+	var title := Label.new()
+	title.text = "核心储能站已毁坏 · 游戏结束"
+	box.add_child(title)
+	var restart := _make_small_button("返回主菜单")
+	restart.pressed.connect(func(): get_tree().change_scene_to_file("res://main.tscn"))
+	box.add_child(restart)
+	restart.grab_focus()
+	set_process(false)
+	set_physics_process(false)
+	set_process_unhandled_input(false)
+	queue_redraw()
+
+
 func _start_demo() -> void:
 	demo_started = true
 	intro_panel.hide()
-	_show_notice("开局没有引擎与抓钩。先采集、种田，再用 T 研究科技并用 B 建造。", 7.0)
+	_show_notice("浮岛北侧约 6 格就是围墙。先采集和研究动力，再决定从哪里撞开缺口。", 9.0)
 
 
 func _capture_preview(show_map := false, expand_island := false) -> void:
@@ -1902,6 +1955,7 @@ func _update_hud() -> void:
 	hud_refresh_left = 0.1
 	if money_label == null:
 		return
+	guide_body.text = GUIDE_TEXT + wall.journal()
 	tool_sidebar.visible = demo_started and not sky_map_open and not development.modal.visible and not navigation_view.paused()
 	money_label.text = str(coins)
 	energy_label.text = "%d/%d%s" % [int(energy), int(energy_capacity), " !" if energy < energy_capacity * 0.2 or energy_warning_left > 0.0 else ""]
@@ -2039,8 +2093,8 @@ func _set_plot_context(index: int) -> void:
 	else:
 		context_label.text = "%s · 成熟\n收获 ×%d · %d 金\n能源工厂：每份 %d E" % [crop_name, yield_count, income, _crop_energy(int(plot.crop_type))]
 	var farm: Dictionary = development.tile_at(plot.cell)
-	if float(farm.get("hp", 100.0)) < 100.0:
-		context_label.text += "\n\n受损 %d/100 · 禁止播种\n修缮：%s" % [farm.hp, Development.Rules.cost_text(development.repair_cost(plot.cell))]
+	if Development.Rules.tile_health(farm) < 1.0:
+		context_label.text += "\n\n受损 %d/%d · 禁止播种\n修缮：%s" % [ceili(farm.hp), Development.Rules.tile_max_hp(farm), Development.Rules.cost_text(development.repair_cost(plot.cell))]
 
 
 func _growth_multiplier() -> float:
@@ -2082,6 +2136,9 @@ func _show_notice(text_value: String, duration := 3.0) -> void:
 
 
 func _draw() -> void:
+	if game_over:
+		_draw_sky()
+		return
 	if sky_map_open:
 		material = null
 		_draw_sky()
@@ -2098,6 +2155,7 @@ func _draw() -> void:
 		var phase := Time.get_ticks_msec() * 0.09
 		shake = Vector2(sin(phase), cos(phase * 1.37)) * screen_shake_strength * (screen_shake_time / 0.3)
 	draw_set_transform(VIEW_CENTER + shake - camera_world * camera_zoom, 0.0, Vector2(camera_zoom, camera_zoom))
+	wall.draw_world()
 	_draw_targets()
 	_draw_islands()
 	_draw_hook()
@@ -2504,6 +2562,7 @@ func _draw_destination_bearing() -> void:
 
 
 func _draw_sky_map_content() -> void:
+	wall.draw_map()
 	var grid_step := WorldLayout.SECTOR_SIZE * map_scale
 	var origin := _world_to_map(world_origin)
 	var grid_radius := ceili(maxf(MAP_RECT.size.x, MAP_RECT.size.y) / (2.0 * grid_step)) + 1

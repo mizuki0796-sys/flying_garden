@@ -74,23 +74,11 @@ func validate_layout(tiles: Array) -> String:
 	for i in range(tiles.size()):
 		var tile: Dictionary = tiles[i]
 		if not tile.get("cell") is Vector2i: return "布局坐标无效"
-		if original[i].cell == Vector2i.ZERO and tile.cell != Vector2i.ZERO: return "核心地块必须保留在原点"
+		if original[i].get("core", false) and tile.cell != original[i].cell: return "核心地块必须保留在当前位置"
 		if occupied.has(tile.cell): return "地块不能重叠"
 		if absi(tile.cell.x) > 100 or absi(tile.cell.y) > 100: return "布局超出规划范围"
 		occupied[tile.cell] = true
-	if not occupied.has(Vector2i.ZERO): return "布局必须保留核心"
-	var queue: Array = [Vector2i.ZERO]
-	var seen := {Vector2i.ZERO: true}
-	var cursor := 0
-	while cursor < queue.size():
-		var cell: Vector2i = queue[cursor]
-		cursor += 1
-		for direction in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
-			var neighbor: Vector2i = cell + direction
-			if occupied.has(neighbor) and not seen.has(neighbor):
-				seen[neighbor] = true
-				queue.append(neighbor)
-	if seen.size() != tiles.size(): return "有地块与核心断开；请连接后再应用"
+	if Tiles.connected_cells(occupied, Tiles.core_cell(tiles)).size() != tiles.size(): return "有地块与核心断开；请连接后再应用"
 	for tile in tiles:
 		if tile.facility != "harbor": continue
 		var edge := false
@@ -113,14 +101,14 @@ func move_selection(delta: Vector2i) -> bool:
 	if delta == Vector2i.ZERO or selected.is_empty(): return false
 	var candidate := draft.duplicate(true)
 	for index in selected:
-		if original[index].cell == Vector2i.ZERO: feedback = "核心固定；请框选其他地块"; refresh(); return false
+		if original[index].get("core", false): feedback = "核心固定；请框选其他地块"; refresh(); return false
 		candidate[index].cell += delta
 	# A single occupied destination swaps complete tiles, including their contents.
 	if selected.size() == 1:
 		var index: int = selected[0]
 		for other in range(draft.size()):
 			if other != index and draft[other].cell == candidate[index].cell:
-				if original[other].cell == Vector2i.ZERO: feedback = "不能交换核心地块"; refresh(); return false
+				if original[other].get("core", false): feedback = "不能交换核心地块"; refresh(); return false
 				candidate[other].cell = draft[index].cell
 	var occupied: Dictionary = {}
 	for tile in candidate:

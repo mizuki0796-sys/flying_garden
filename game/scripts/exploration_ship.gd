@@ -53,6 +53,9 @@ func berths(cell: Vector2i) -> Dictionary:
 		for tile in game.island_tiles:
 			if hull.intersects(Tiles.cell_rect(game.island_pos, tile.cell)): blocked = true; break
 		if blocked: continue
+		for solid in game.wall.solids(hull):
+			if hull.intersects(solid): blocked = true; break
+		if blocked: continue
 		for terrain in game.hazards:
 			if not terrain.get("active", false) or terrain.get("tiles", []).is_empty(): continue
 			var origin := terrain_origin(terrain)
@@ -278,6 +281,17 @@ func sweep_tile(rect: Rect2, movement: Vector2) -> Dictionary:
 
 func move_with_collisions(movement: Vector2) -> void:
 	var first: Dictionary = {}
+	var path := Rect2(position - HULL * 0.5, HULL).merge(Rect2(position + movement - HULL * 0.5, HULL)).grow(1.0)
+	for solid in game.wall.solids(path):
+		var push: Vector2 = game.wall.separation(Rect2(position - HULL * 0.5, HULL), solid)
+		if push != Vector2.ZERO:
+			position += push + push.normalized() * 0.1
+			first = {"time": 0.0, "normal": push.normalized(), "wall": true}
+			break
+		var hit := sweep_tile(solid, movement)
+		if not hit.is_empty() and (first.is_empty() or float(hit.time) < float(first.time)):
+			first = hit
+			first.wall = true
 	var candidates: Array = game.hazards.duplicate()
 	candidates.append({"pos": game.island_pos + Tiles.bounds(game.island_tiles).get_center(), "tiles": game.island_tiles, "active": true, "shop": true, "home": true})
 	if not target.is_empty() and not candidates.has(target): candidates.append(target)
@@ -285,7 +299,6 @@ func move_with_collisions(movement: Vector2) -> void:
 		if not terrain.get("active", false) or terrain.get("tiles", []).is_empty(): continue
 		var bounds := Tiles.bounds(terrain.tiles)
 		var origin: Vector2 = terrain.pos - bounds.get_center()
-		var path := Rect2(position - HULL * 0.5, HULL).merge(Rect2(position + movement - HULL * 0.5, HULL)).grow(1.0)
 		if not path.intersects(Rect2(origin + bounds.position, bounds.size)): continue
 		if clearance(terrain) < -0.01:
 			first = {"time": 0.0, "normal": separate_overlap(terrain), "terrain": terrain}
@@ -299,6 +312,14 @@ func move_with_collisions(movement: Vector2) -> void:
 		position += movement
 		return
 	position += movement * float(first.time) + Vector2(first.normal) * 0.1
+	if first.get("wall", false):
+		var speed := maxf(0.0, -velocity.dot(first.normal))
+		velocity = velocity.slide(first.normal)
+		state = "manual"
+		target = {}
+		exhaust.clear()
+		impact(speed)
+		return
 	target = first.terrain
 	var other_velocity := terrain_velocity(target)
 	var closing_speed := maxf(0.0, -(velocity - other_velocity).dot(first.normal))

@@ -43,9 +43,9 @@ func run() -> void:
 	check(layout.validate_layout(layout.draft).is_empty(), "Initial layout is valid")
 	coins = game.coins
 	check(not layout.apply() and game.coins == coins, "Unchanged application is free and rejected")
-	layout.selected = [index_of(layout, Vector2i.ZERO)]
+	layout.selected = [index_of(layout, Vector2i(-1, -2))]
 	check(not layout.move_selection(Vector2i.RIGHT), "Core cannot move")
-	layout.selected = [index_of(layout, Vector2i(-1, 0))]
+	layout.selected = [index_of(layout, Vector2i(-2, -2))]
 	check(not layout.move_selection(Vector2i.RIGHT), "Core cannot be swapped")
 	layout.selected = [index_of(layout, Vector2i(-2, -2))]
 	check(layout.move_selection(Vector2i(-5, 0)), "Draft permits temporarily disconnected arrangement")
@@ -60,7 +60,8 @@ func run() -> void:
 	layout.reset()
 	# Complete tile state and plot state must follow a swap.
 	var farm_cell := Vector2i(1, 0)
-	var house_cell := Vector2i(-1, -2)
+	var house_cell := Vector2i(0, -2)
+	dev.tile_at(house_cell).facility = "water"
 	var farm: Dictionary = dev.tile_at(farm_cell)
 	farm.reinforcement = 3
 	farm.hp = 132.0

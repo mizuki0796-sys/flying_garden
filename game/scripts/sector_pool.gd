@@ -40,6 +40,7 @@ func acquire(key: Vector2i, origin: Vector2) -> Dictionary:
 				tile[field] = source_tile[field].duplicate(true) if source_tile[field] is Dictionary or source_tile[field] is Array else source_tile[field]
 			terrain.tiles.append(tile)
 		if not changed:
+			terrain.wall_allowed = float(terrain.pos.y) - Tiles.bounds(terrain.tiles).size.y * 0.5 > origin.y + preload("res://scripts/thick_wall.gd").NEAR + 32.0
 			terrain.radius = Tiles.bounds(terrain.tiles).size.length() * 0.5
 			terrain.active = true
 			terrain.tethered = false

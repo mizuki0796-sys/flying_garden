@@ -51,7 +51,7 @@ func input_event(event: InputEvent) -> void:
 				if boxing:
 					var region := Rect2(start_point, cursor - start_point).abs()
 					for i in range(editor.draft.size()):
-						if editor.original[i].cell == Vector2i.ZERO: continue
+						if editor.original[i].get("core", false): continue
 						if region.has_point(offset + Vector2(editor.draft[i].cell) * Tiles.CELL_SIZE * zoom): editor.selected.append(i)
 				dragging = false
 				boxing = false
@@ -98,7 +98,8 @@ func _draw() -> void:
 		if dragging:
 			var delta := cell_at(cursor) - start_cell
 			draw_rect(Rect2(rect.position + Vector2(delta) * Tiles.CELL_SIZE, rect.size), Color(1, 0.9, 0.4, 0.4))
-	draw_rect(Tiles.cell_rect(Vector2.ZERO, Vector2i.ZERO).grow(-6), Color("#f0aa55"), false, 3.0 / zoom)
+	var core := Tiles.core_cell(editor.draft)
+	draw_rect(Tiles.cell_rect(Vector2.ZERO, core).grow(-6), Color("#f0aa55"), false, 3.0 / zoom)
 	draw_set_transform(Vector2.ZERO)
-	draw_string(ThemeDB.fallback_font, offset + Vector2(-14, 8), "核心", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#614026"))
+	draw_string(ThemeDB.fallback_font, offset + Vector2(core) * Tiles.CELL_SIZE * zoom + Vector2(-14, 8), "核心", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#614026"))
 	if boxing: draw_rect(Rect2(start_point, cursor - start_point).abs(), Color("#fff3aa"), false, 2)

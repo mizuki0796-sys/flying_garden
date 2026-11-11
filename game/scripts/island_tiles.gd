@@ -24,7 +24,29 @@ static func initial_tiles() -> Array:
 				facility = "water"
 			var cell := Vector2i(x - 2, y - 2)
 			tiles.append({"cell": cell, "kind": terrain[y][x], "facility": facility, "level": 1, "hp": 100.0, "depleted": false})
+			if facility == "water": tiles.back().core = true
 	return tiles
+
+
+static func core_cell(tiles: Array) -> Vector2i:
+	for tile in tiles:
+		if tile.get("core", false): return tile.cell
+	return Vector2i.MAX
+
+
+static func connected_cells(occupied: Dictionary, start: Vector2i) -> Dictionary:
+	var seen := {}
+	if not occupied.has(start): return seen
+	var pending := [start]
+	seen[start] = true
+	while not pending.is_empty():
+		var cell: Vector2i = pending.pop_back()
+		for direction in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var neighbor: Vector2i = cell + direction
+			if occupied.has(neighbor) and not seen.has(neighbor):
+				seen[neighbor] = true
+				pending.append(neighbor)
+	return seen
 
 
 static func wild_tiles(biome: int, variant: int, size_class := 0) -> Array:
@@ -61,6 +83,7 @@ static func wild_tiles(biome: int, variant: int, size_class := 0) -> Array:
 
 
 static func bounds(tiles: Array) -> Rect2:
+	if tiles.is_empty(): return Rect2()
 	var result := cell_rect(Vector2.ZERO, tiles[0].cell)
 	for tile in tiles:
 		result = result.merge(cell_rect(Vector2.ZERO, tile.cell))

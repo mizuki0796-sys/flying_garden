@@ -387,6 +387,9 @@ func relocate(from: Vector2i, to: Vector2i) -> bool:
 		message("港口只能在飞船停泊时搬到外围地块")
 		return false
 	if not pay({"coins": 5}): return false
+	if source.get("core", false):
+		destination.core = true
+		source.erase("core")
 	destination.facility = source.facility
 	destination.level = source.get("level", 1)
 	if str(source.facility) == "farm_hut":
@@ -402,20 +405,11 @@ func relocate(from: Vector2i, to: Vector2i) -> bool:
 
 func can_trim(cell: Vector2i) -> bool:
 	var tile := tile_at(cell)
-	if tile.is_empty() or cell == Vector2i.ZERO or game.island_tiles.size() <= 1 or str(tile.facility) != "": return false
+	if tile.is_empty() or game.island_tiles.size() <= 1 or str(tile.facility) != "": return false
 	var occupied: Dictionary = {}
 	for value in game.island_tiles:
 		if value.cell != cell: occupied[value.cell] = true
-	var seen := {Vector2i.ZERO: true}
-	var queue: Array = [Vector2i.ZERO]
-	while not queue.is_empty():
-		var current: Vector2i = queue.pop_front()
-		for direction in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
-			var neighbor: Vector2i = current + direction
-			if occupied.has(neighbor) and not seen.has(neighbor):
-				seen[neighbor] = true
-				queue.append(neighbor)
-	return seen.size() == occupied.size()
+	return Tiles.connected_cells(occupied, Tiles.core_cell(game.island_tiles)).size() == occupied.size()
 
 func trim(cell: Vector2i) -> bool:
 	if int(tech.terraform) == 0:
@@ -428,10 +422,7 @@ func trim(cell: Vector2i) -> bool:
 		message("不能抛弃核心、设施或会切断主岛的地块")
 		return false
 	if not pay(Rules.TRIM_COST): return false
-	var index := plot_at(cell)
-	if index >= 0: game.plots.remove_at(index)
-	game.island_tiles.erase(tile_at(cell))
-	sync()
+	destroy_tile(cell)
 	message("地块已抛弃；地形和未收获作物不返还")
 	return true
 
@@ -492,7 +483,8 @@ func damage_cell(cell: Vector2i, amount: float, reason := "受损", destroy_crop
 	if destroy_crop and plot_index >= 0 and int(game.plots[plot_index].state) != 0:
 		game.plots[plot_index].state = 0
 		game.plots[plot_index].progress = 0.0
-	message("%s：%s耐久 %d/%d" % [reason, Rules.TERRAIN_NAMES[tile.kind], tile.hp, Rules.tile_max_hp(tile)])
+	if tile.hp <= 0.0: return destroy_tile(cell)
+	message("%s：%s耐久 %d/%d" % [reason, Rules.TERRAIN_NAMES[tile.kind], ceili(tile.hp), Rules.tile_max_hp(tile)])
 	return true
 
 func damage_at(world_position: Vector2, speed: float) -> void:
@@ -511,36 +503,47 @@ func damage_at(world_position: Vector2, speed: float) -> void:
 
 func destroy_tile(cell: Vector2i) -> bool:
 	var tile := tile_at(cell)
-	if tile.is_empty() or cell == Vector2i.ZERO or game.island_tiles.size() <= 1:
-		return false
-	for index in range(game.plots.size() - 1, -1, -1):
-		if game.plots[index].cell == cell:
-			game.plots.remove_at(index)
+	if tile.is_empty(): return false
 	game.island_tiles.erase(tile)
+	if tile.get("core", false):
+		game.end_game()
+		return true
+	prune_disconnected()
+	sync()
+	if game.hook_state != game.HOOK_READY and not has_facility("grapple"):
+		var target: Dictionary = game.targets[game.hooked_target] if game.hooked_target >= 0 else {}
+		game._release_hook_target(target, "抓钩小屋已损毁，牵引中止")
+	return true
+
+func prune_disconnected() -> void:
+	var occupied := {}
+	for tile in game.island_tiles: occupied[tile.cell] = true
+	var connected := Tiles.connected_cells(occupied, Tiles.core_cell(game.island_tiles))
+	if connected.size() < game.island_tiles.size():
+		game.island_tiles = game.island_tiles.filter(func(tile): return connected.has(tile.cell))
+	game.plots = game.plots.filter(func(plot): return connected.has(plot.cell))
 	game.selected_plot = -1
 	game.hovered_plot = -1
-	return true
 
 func collision_at(world_position: Vector2, speed: float, other_mass: float) -> int:
 	var ordered: Array = []
 	for tile in game.island_tiles:
-		if tile.cell == Vector2i.ZERO:
-			continue
 		ordered.append({"tile": tile, "distance": (game.island_pos + Vector2(tile.cell) * Tiles.CELL_SIZE).distance_squared_to(world_position)})
 	ordered.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.distance) < float(b.distance))
 	var ratio: float = maxf(game.island_mass, other_mass) / maxf(1.0, minf(game.island_mass, other_mass))
 	var catastrophic: bool = (ratio >= 3.0 and maxf(game.island_mass, other_mass) >= 35.0) or (game.island_mass >= 45.0 and other_mass >= 45.0)
 	var destroy_count: int = 3 if catastrophic and speed >= 70.0 else (2 if catastrophic or speed >= 105.0 else 1)
-	var removed := 0
+	var before: int = game.island_tiles.size()
 	for index in range(mini(destroy_count, ordered.size())):
 		var tile: Dictionary = ordered[index].tile
 		if int(tile.get("reinforcement", 0)) > 0:
 			damage_cell(tile.cell, speed * 0.9 + other_mass * 0.4, "加固地块抵挡撞击")
-			if float(tile.hp) > 0.0: continue
-		if destroy_tile(tile.cell): removed += 1
+		else: destroy_tile(tile.cell)
+		if game.game_over: return before
 	if ordered.size() > destroy_count:
 		damage_cell(ordered[destroy_count].tile.cell, clampf(speed * 0.35 + other_mass * 0.25, 10.0, 70.0), "撞击波及")
-	sync()
+	var removed: int = before - game.island_tiles.size()
+	if game.game_over: return removed
 	message("猛烈撞击：崩落 %d 格%s" % [removed, "，质量差导致局部连锁坍塌" if catastrophic else ""])
 	game.screen_shake_time = 0.3
 	game.screen_shake_strength = clampf(speed / 7.0, 6.0, 16.0)
@@ -559,9 +562,11 @@ func survey(target: Dictionary) -> bool:
 			total[key] = int(total.get(key, 0)) + int(Rules.YIELDS[tile.kind][key]) * gathering_multiplier()
 	var value := 0
 	for key in total: value += int(total[key]) * int({"coins": 1, "wood": 3, "stone": 2, "ore": 5, "magma": 10, "food": 6, "rice_seeds": 2, "tomato_seeds": 4}[key])
+	var first_survey := not bool(terrain.get("surveyed", false))
 	terrain.surveyed = true
 	terrain.report = "%s · %s · 资源 %s · 参考估值 %d 金" % [terrain.name, str(terrain.get("rarity", "普通")), Rules.cost_text(total), value]
 	message(terrain.report)
+	if first_survey: game.wall.discover()
 	return true
 
 func update(delta := 0.0) -> void:
